@@ -31,10 +31,31 @@ function dynamicFallback(a, b) {
 }
 """;
 
-var compilation = engine.Execute(source);
+var verified = engine.ExecuteVerified(
+    source,
+    new Dictionary<string, object?[][]>
+    {
+        ["add"] = new[]
+        {
+            new object?[] { 10.0, 20.0 },
+            new object?[] { -2.0, 2.0 }
+        }
+    });
 
-Console.WriteLine($"compiled: {string.Join(", ", compilation.CompiledFunctions.Keys)}");
-Console.WriteLine($"fallback: {string.Join(", ", compilation.Fallbacks.Keys)}");
+verified.ThrowIfUnverified();
+
+Console.WriteLine($"compiled: {string.Join(", ", verified.Compilation.CompiledFunctions.Keys)}");
+Console.WriteLine($"fallback: {string.Join(", ", verified.Compilation.Fallbacks.Keys)}");
+
+foreach (var output in verified.CompilerOutputs.Values)
+{
+    Console.WriteLine(output.ToMarkdown());
+}
+
+foreach (var output in verified.RuntimeOutputs.Values)
+{
+    Console.WriteLine(output.ToMarkdown());
+}
 
 Console.WriteLine($"add(10, 20) = {engine.Invoke("add", 10.0, 20.0)}");
 Console.WriteLine($"dynamicFallback(10, 20) = {engine.Invoke("dynamicFallback", 10, 20)}");
