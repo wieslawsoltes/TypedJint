@@ -2,7 +2,7 @@
 
 TypedJint is a pure-.NET typed execution layer around [Jint](https://github.com/sebastienros/jint).
 
-It keeps Jint as the JavaScript correctness and fallback runtime, then adds:
+It keeps Jint as the JavaScript semantic runtime, then adds:
 
 - JSDoc-based type annotations
 - safe-function compilation to .NET delegates through expression trees
@@ -10,11 +10,11 @@ It keeps Jint as the JavaScript correctness and fallback runtime, then adds:
 - optional runtime equivalence checks against Jint for pure functions
 - direct typed CLR/DOM interop
 - a small native .NET DOM, event, and HTMLML-ready object model
-- transparent fallback to Jint for unsupported JavaScript
+- a full JavaScript runtime backend for dynamic ECMAScript features that are not statically compiled
 
 ## Current implementation
 
-The implementation supports a deliberately strict typed subset:
+The statically compiled subset supports:
 
 - annotated `function` declarations
 - primitive parameters: `number`, `string`, `boolean`, `void`
@@ -33,7 +33,19 @@ The implementation supports a deliberately strict typed subset:
 - member access
 - method calls on typed CLR/DOM objects
 - direct DOM calls such as `document.createElement`, `appendChild`, `classList.add`, `dispatchEvent`
-- Jint fallback for dynamic/unsupported functions
+
+The full JavaScript runtime backend covers dynamic JavaScript features through Jint semantics:
+
+- closures
+- classes
+- arrays
+- object literals
+- computed properties
+- exceptions
+- async/await syntax and Promise shape
+- generators
+- destructuring
+- prototype semantics
 
 ## Verified execution
 
@@ -79,15 +91,33 @@ Console.WriteLine(verified.CompilerOutputs["sumEven"].NormalizedIr);
 Console.WriteLine(verified.CompilerOutputs["sumEven"].CSharpPreview);
 ```
 
-The verification layer checks:
+## Full JavaScript runtime execution
 
-- every compiled function exists in parsed source
-- compiled delegate parameter count matches the parsed function
-- compiled delegate parameter CLR types match JSDoc types
-- compiled delegate return type matches JSDoc return type
-- normalized IR is generated deterministically
-- C# preview is generated for compiled functions
-- optional runtime cases produce equivalent compiled and Jint results
+```csharp
+using TypedJint;
+
+var engine = new FullJavaScriptRuntimeEngine();
+
+engine.Execute("""
+class Counter {
+    constructor(value) {
+        this.value = value;
+    }
+
+    next() {
+        return ++this.value;
+    }
+}
+
+function runDynamic() {
+    const counter = new Counter(40);
+    const { value } = { value: counter.next() };
+    return value + 1;
+}
+""");
+
+Console.WriteLine(engine.Invoke("runDynamic")); // 42
+```
 
 ## DOM interop example
 
