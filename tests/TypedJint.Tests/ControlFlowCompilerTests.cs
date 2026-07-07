@@ -35,7 +35,7 @@ public sealed class ControlFlowCompilerTests
 
         Assert.True(verified.Verified, verified.CompilerOutputs["abs"].ToMarkdown());
         Assert.Equal(10.0, engine.Invoke("abs", -10.0));
-        Assert.Contains("if (x < 0)", verified.CompilerOutputs["abs"].CSharpPreview, StringComparison.Ordinal);
+        Assert.Contains("if ((x < 0))", verified.CompilerOutputs["abs"].CSharpPreview, StringComparison.Ordinal);
     }
 
     [Fact]
