@@ -6,6 +6,7 @@ It keeps Jint as the JavaScript semantic runtime, then adds:
 
 - JSDoc-based type annotations
 - safe-function compilation to .NET delegates through expression trees
+- JavaScript-to-C# generation in class, top-level statement, and runtime-compatible modes
 - strongly typed compiled delegate access for low-overhead invocation
 - verified compiler output: semantic signature, delegate signature, normalized IR, C# preview, and diagnostics
 - optional runtime equivalence checks against Jint for pure functions
@@ -97,6 +98,38 @@ Console.WriteLine(verified.CompilerOutputs["sumEven"].SemanticSignature);
 Console.WriteLine(verified.CompilerOutputs["sumEven"].DelegateSignature);
 Console.WriteLine(verified.CompilerOutputs["sumEven"].NormalizedIr);
 Console.WriteLine(verified.CompilerOutputs["sumEven"].CSharpPreview);
+```
+
+## JavaScript to C# generation
+
+Static class mode:
+
+```csharp
+var csharp = JavaScriptCSharpGenerator.GenerateStaticClass(source, "ScriptModule");
+```
+
+Top-level C# statements mode emits local functions and global C# statements:
+
+```csharp
+var csharp = JavaScriptCSharpGenerator.GenerateTopLevelStatements("""
+/**
+ * @param {number} a
+ * @param {number} b
+ * @returns {number}
+ */
+function add(a, b) {
+    return a + b;
+}
+
+let value = add(10, 32);
+value += 1;
+""");
+```
+
+Runtime-compatible top-level mode preserves arbitrary JavaScript semantics by emitting a C# program backed by `JavaScriptRuntimeEngine`:
+
+```csharp
+var csharp = JavaScriptCSharpGenerator.GenerateRuntimeTopLevelStatements(source);
 ```
 
 ## JavaScript runtime execution
