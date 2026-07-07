@@ -35,10 +35,10 @@ public sealed class MainWindow : Window
     private Control BuildUi()
     {
         var root = new Grid { Margin = new Thickness(12) };
-        root.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
-        root.RowDefinitions.Add(new RowDefinition(new GridLength(1, GridUnitType.Star)));
-        root.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(1, GridUnitType.Star)));
-        root.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(1, GridUnitType.Star)));
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
         var runButton = new Button
         {
@@ -68,10 +68,10 @@ public sealed class MainWindow : Window
         root.Children.Add(sourcePanel);
 
         var outputGrid = new Grid { Margin = new Thickness(12, 0, 0, 0) };
-        outputGrid.RowDefinitions.Add(new RowDefinition(new GridLength(2, GridUnitType.Star)));
-        outputGrid.RowDefinitions.Add(new RowDefinition(new GridLength(1, GridUnitType.Star)));
-        outputGrid.RowDefinitions.Add(new RowDefinition(new GridLength(1, GridUnitType.Star)));
-        outputGrid.RowDefinitions.Add(new RowDefinition(new GridLength(1, GridUnitType.Star)));
+        outputGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(2, GridUnitType.Star) });
+        outputGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        outputGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        outputGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
         AddOutputPanel(outputGrid, "Generated C# preview", _csharp, 0);
         AddOutputPanel(outputGrid, "Normalized IR", _ir, 1);
@@ -219,9 +219,7 @@ public sealed class MainWindow : Window
             IsReadOnly = readOnly,
             TextWrapping = TextWrapping.NoWrap,
             FontFamily = FontFamily.Parse("Consolas, Menlo, Monaco, monospace"),
-            FontSize = 13,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto
+            FontSize = 13
         };
     }
 
