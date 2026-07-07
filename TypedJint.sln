@@ -6,6 +6,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TypedJint", "src\TypedJint\
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TypedJint.Sample", "samples\TypedJint.Sample\TypedJint.Sample.csproj", "{8E5B6612-F766-4373-8AA5-5D379A4D0C8D}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TypedJint.Playground", "samples\TypedJint.Playground\TypedJint.Playground.csproj", "{32B74429-9C93-4873-9E4E-88C89A5FA927}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TypedJint.Tests", "tests\TypedJint.Tests\TypedJint.Tests.csproj", "{14910289-965B-426A-B9BB-B1D91B77E9DE}"
 EndProject
 Global
@@ -22,6 +24,10 @@ Global
 		{8E5B6612-F766-4373-8AA5-5D379A4D0C8D}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{8E5B6612-F766-4373-8AA5-5D379A4D0C8D}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{8E5B6612-F766-4373-8AA5-5D379A4D0C8D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{32B74429-9C93-4873-9E4E-88C89A5FA927}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{32B74429-9C93-4873-9E4E-88C89A5FA927}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{32B74429-9C93-4873-9E4E-88C89A5FA927}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{32B74429-9C93-4873-9E4E-88C89A5FA927}.Release|Any CPU.Build.0 = Release|Any CPU
 		{14910289-965B-426A-B9BB-B1D91B77E9DE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{14910289-965B-426A-B9BB-B1D91B77E9DE}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{14910289-965B-426A-B9BB-B1D91B77E9DE}.Release|Any CPU.ActiveCfg = Release|Any CPU

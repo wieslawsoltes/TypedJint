@@ -6,7 +6,7 @@ It keeps Jint as the JavaScript correctness and fallback runtime, then adds:
 
 - JSDoc-based type annotations
 - safe-function compilation to .NET delegates through expression trees
-- verified compiler output: semantic signature, delegate signature, normalized IR, and diagnostics
+- verified compiler output: semantic signature, delegate signature, normalized IR, C# preview, and diagnostics
 - optional runtime equivalence checks against Jint for pure functions
 - direct typed CLR/DOM interop
 - a small native .NET DOM, event, and HTMLML-ready object model
@@ -21,9 +21,15 @@ The implementation supports a deliberately strict typed subset:
 - DOM parameters: `Document`, `Element`, `HTMLElement`, `HTMLButtonElement`, `TextNode`, `DomElement`
 - `let` / `const` / `var`
 - `return`
+- block statements
+- `if` / `else`
+- `while`
+- `for`
+- postfix/prefix update expressions: `++`, `--`
 - expression statements
-- assignment to CLR/DOM properties
+- assignment to locals and CLR/DOM properties
 - numeric/string/boolean binary expressions
+- `%`, `===`, `!==`
 - member access
 - method calls on typed CLR/DOM objects
 - direct DOM calls such as `document.createElement`, `appendChild`, `classList.add`, `dispatchEvent`
@@ -38,13 +44,18 @@ var engine = new TypedJintEngine();
 
 var source = """
 /**
- * @param {number} a
- * @param {number} b
+ * @param {number} limit
  * @returns {number}
  */
-function add(a, b) {
-    let c = a + b;
-    return c;
+function sumEven(limit) {
+    let acc = 0;
+    for (let i = 0; i <= limit; i++) {
+        if (i % 2 === 0) {
+            acc = acc + i;
+        }
+    }
+
+    return acc;
 }
 """;
 
@@ -52,18 +63,20 @@ var verified = engine.ExecuteVerified(
     source,
     new Dictionary<string, object?[][]>
     {
-        ["add"] = new[]
+        ["sumEven"] = new[]
         {
-            new object?[] { 10.0, 20.0 },
-            new object?[] { -2.0, 2.0 }
+            new object?[] { 0.0 },
+            new object?[] { 6.0 },
+            new object?[] { 10.0 }
         }
     });
 
 verified.ThrowIfUnverified();
 
-Console.WriteLine(verified.CompilerOutputs["add"].SemanticSignature);
-Console.WriteLine(verified.CompilerOutputs["add"].DelegateSignature);
-Console.WriteLine(verified.CompilerOutputs["add"].NormalizedIr);
+Console.WriteLine(verified.CompilerOutputs["sumEven"].SemanticSignature);
+Console.WriteLine(verified.CompilerOutputs["sumEven"].DelegateSignature);
+Console.WriteLine(verified.CompilerOutputs["sumEven"].NormalizedIr);
+Console.WriteLine(verified.CompilerOutputs["sumEven"].CSharpPreview);
 ```
 
 The verification layer checks:
@@ -73,6 +86,7 @@ The verification layer checks:
 - compiled delegate parameter CLR types match JSDoc types
 - compiled delegate return type matches JSDoc return type
 - normalized IR is generated deterministically
+- C# preview is generated for compiled functions
 - optional runtime cases produce equivalent compiled and Jint results
 
 ## DOM interop example
@@ -97,6 +111,23 @@ function setup(button) {
 var button = engine.Document.createElement("button");
 engine.Invoke("setup", button);
 ```
+
+## Avalonia playground
+
+Run the desktop playground:
+
+```bash
+dotnet run --project samples/TypedJint.Playground
+```
+
+The playground shows:
+
+- JavaScript input
+- generated C# preview
+- normalized IR
+- compiler diagnostics
+- verified runtime results
+- DOM interop output
 
 ## Build
 

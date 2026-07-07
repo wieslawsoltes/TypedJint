@@ -47,6 +47,8 @@ public sealed record VerifiedCompilerOutput(
     string NormalizedIr,
     IReadOnlyList<TypedDiagnostic> Diagnostics)
 {
+    public string CSharpPreview { get; init; } = string.Empty;
+
     public string ToMarkdown()
     {
         var builder = new StringBuilder();
@@ -58,6 +60,14 @@ public sealed record VerifiedCompilerOutput(
         builder.AppendLine("```text");
         builder.Append(NormalizedIr);
         builder.AppendLine("```");
+
+        if (!string.IsNullOrWhiteSpace(CSharpPreview))
+        {
+            builder.AppendLine();
+            builder.AppendLine("```csharp");
+            builder.Append(CSharpPreview);
+            builder.AppendLine("```");
+        }
 
         foreach (var diagnostic in Diagnostics)
         {
@@ -191,6 +201,7 @@ public static class TypedCompilerOutputVerifier
             var semanticSignature = FormatSemanticSignature(declaration, diagnostics);
             var delegateSignature = FormatDelegate(pair.Value.Delegate);
             var normalizedIr = VerifiedIrPrinter.Print(declaration);
+            var csharpPreview = TypedJintTranspiler.TranspileFunctionToCSharp(declaration);
             VerifyDelegateSignature(declaration, pair.Value.Delegate, diagnostics);
 
             var verified = diagnostics.All(x => x.Severity != TypedDiagnosticSeverity.Error);
@@ -203,7 +214,10 @@ public static class TypedCompilerOutputVerifier
                     declaration.Span));
             }
 
-            outputs[pair.Key] = new VerifiedCompilerOutput(pair.Key, verified, semanticSignature, delegateSignature, normalizedIr, diagnostics);
+            outputs[pair.Key] = new VerifiedCompilerOutput(pair.Key, verified, semanticSignature, delegateSignature, normalizedIr, diagnostics)
+            {
+                CSharpPreview = csharpPreview
+            };
         }
 
         return outputs;
@@ -374,6 +388,12 @@ internal static class VerifiedIrPrinter
         var pad = new string(' ', indent * 2);
         switch (statement)
         {
+            case JsBlockStatement block:
+                builder.Append(pad).AppendLine("block");
+                builder.Append(pad).AppendLine("{");
+                foreach (var child in block.Statements) PrintStatement(builder, child, indent + 1);
+                builder.Append(pad).AppendLine("}");
+                break;
             case JsVariableStatement variable:
                 builder.Append(pad).Append("let ").Append(variable.Name).Append(" = ").AppendLine(PrintExpression(variable.Initializer));
                 break;
@@ -392,10 +412,39 @@ internal static class VerifiedIrPrinter
             case JsAssignmentStatement assignment:
                 builder.Append(pad).Append(PrintExpression(assignment.Target)).Append(" = ").AppendLine(PrintExpression(assignment.Value));
                 break;
+            case JsIfStatement ifStatement:
+                builder.Append(pad).Append("if ").AppendLine(PrintExpression(ifStatement.Test));
+                PrintStatement(builder, ifStatement.Consequent, indent + 1);
+                if (ifStatement.Alternate is not null)
+                {
+                    builder.Append(pad).AppendLine("else");
+                    PrintStatement(builder, ifStatement.Alternate, indent + 1);
+                }
+                break;
+            case JsWhileStatement whileStatement:
+                builder.Append(pad).Append("while ").AppendLine(PrintExpression(whileStatement.Test));
+                PrintStatement(builder, whileStatement.Body, indent + 1);
+                break;
+            case JsForStatement forStatement:
+                builder.Append(pad).Append("for init=").Append(PrintStatementPart(forStatement.Init)).Append(" test=").Append(forStatement.Test is null ? string.Empty : PrintExpression(forStatement.Test)).Append(" update=").AppendLine(PrintStatementPart(forStatement.Update));
+                PrintStatement(builder, forStatement.Body, indent + 1);
+                break;
             default:
                 builder.Append(pad).AppendLine(statement.GetType().Name);
                 break;
         }
+    }
+
+    private static string PrintStatementPart(JsStatement? statement)
+    {
+        return statement switch
+        {
+            null => string.Empty,
+            JsVariableStatement variable => "let " + variable.Name + " = " + PrintExpression(variable.Initializer),
+            JsAssignmentStatement assignment => PrintExpression(assignment.Target) + " = " + PrintExpression(assignment.Value),
+            JsExpressionStatement expression => PrintExpression(expression.Expression),
+            _ => statement.GetType().Name
+        };
     }
 
     private static string PrintExpression(JsExpression expression)
@@ -412,6 +461,7 @@ internal static class VerifiedIrPrinter
             JsCallExpression call => PrintExpression(call.Target) + "(" + string.Join(", ", call.Arguments.Select(PrintExpression)) + ")",
             JsBinaryExpression binary => "(" + PrintExpression(binary.Left) + " " + binary.Operator + " " + PrintExpression(binary.Right) + ")",
             JsUnaryExpression unary => "(" + unary.Operator + PrintExpression(unary.Operand) + ")",
+            JsUpdateExpression update => update.Prefix ? "(" + update.Operator + PrintExpression(update.Target) + ")" : "(" + PrintExpression(update.Target) + update.Operator + ")",
             _ => expression.GetType().Name
         };
     }
