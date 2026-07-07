@@ -10,7 +10,7 @@ It keeps Jint as the JavaScript semantic runtime, then adds:
 - optional runtime equivalence checks against Jint for pure functions
 - direct typed CLR/DOM interop
 - a small native .NET DOM, event, and HTMLML-ready object model
-- a full JavaScript runtime backend for dynamic ECMAScript features that are not statically compiled
+- a JavaScript runtime backend for dynamic ECMAScript features that are not statically compiled
 
 ## Current implementation
 
@@ -25,16 +25,20 @@ The statically compiled subset supports:
 - `if` / `else`
 - `while`
 - `for`
+- `break` / `continue`
 - postfix/prefix update expressions: `++`, `--`
 - expression statements
-- assignment to locals and CLR/DOM properties
+- assignment and compound assignment
+- local variables and CLR/DOM properties
 - numeric/string/boolean binary expressions
 - `%`, `===`, `!==`
+- conditional expressions: `test ? a : b`
+- array literals and index access
 - member access
 - method calls on typed CLR/DOM objects
 - direct DOM calls such as `document.createElement`, `appendChild`, `classList.add`, `dispatchEvent`
 
-The full JavaScript runtime backend covers dynamic JavaScript features through Jint semantics:
+The JavaScript runtime backend covers dynamic JavaScript features through Jint semantics:
 
 - closures
 - classes
@@ -63,7 +67,7 @@ function sumEven(limit) {
     let acc = 0;
     for (let i = 0; i <= limit; i++) {
         if (i % 2 === 0) {
-            acc = acc + i;
+            acc += i;
         }
     }
 
@@ -91,12 +95,12 @@ Console.WriteLine(verified.CompilerOutputs["sumEven"].NormalizedIr);
 Console.WriteLine(verified.CompilerOutputs["sumEven"].CSharpPreview);
 ```
 
-## Full JavaScript runtime execution
+## JavaScript runtime execution
 
 ```csharp
 using TypedJint;
 
-var engine = new FullJavaScriptRuntimeEngine();
+var engine = new JavaScriptRuntimeEngine();
 
 engine.Execute("""
 class Counter {

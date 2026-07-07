@@ -2,12 +2,12 @@ using Xunit;
 
 namespace TypedJint.Tests;
 
-public sealed class FullJavaScriptRuntimeCoverageTests
+public sealed class JavaScriptRuntimeCoverageTests
 {
     [Fact]
     public void ExecutesDynamicJavaScriptComputedPropertiesAndDelete()
     {
-        var engine = new FullJavaScriptRuntimeEngine();
+        var engine = new JavaScriptRuntimeEngine();
 
         var result = engine.Execute("""
         function dynamicJavaScript() {
@@ -28,7 +28,7 @@ public sealed class FullJavaScriptRuntimeCoverageTests
     [Fact]
     public void ExecutesClosuresAndMutableCapturedState()
     {
-        var engine = new FullJavaScriptRuntimeEngine();
+        var engine = new JavaScriptRuntimeEngine();
 
         engine.Execute("""
         function closureSemantics() {
@@ -51,7 +51,7 @@ public sealed class FullJavaScriptRuntimeCoverageTests
     [Fact]
     public void ExecutesClassesConstructorsInstanceMembersGettersAndStaticMembers()
     {
-        var engine = new FullJavaScriptRuntimeEngine();
+        var engine = new JavaScriptRuntimeEngine();
 
         var result = engine.Execute("""
         class Point {
@@ -87,7 +87,7 @@ public sealed class FullJavaScriptRuntimeCoverageTests
     [Fact]
     public void ExecutesArraysObjectLiteralsComputedKeysAndArrayMethods()
     {
-        var engine = new FullJavaScriptRuntimeEngine();
+        var engine = new JavaScriptRuntimeEngine();
 
         engine.Execute("""
         function arraysAndObjects() {
@@ -108,7 +108,7 @@ public sealed class FullJavaScriptRuntimeCoverageTests
     [Fact]
     public void ExecutesExceptionsTryCatchFinallyAndErrorObjects()
     {
-        var engine = new FullJavaScriptRuntimeEngine();
+        var engine = new JavaScriptRuntimeEngine();
 
         engine.Execute("""
         function exceptionSemantics() {
@@ -131,7 +131,7 @@ public sealed class FullJavaScriptRuntimeCoverageTests
     [Fact]
     public void ExecutesAsyncAwaitSyntaxAndPromiseShape()
     {
-        var engine = new FullJavaScriptRuntimeEngine();
+        var engine = new JavaScriptRuntimeEngine();
 
         engine.Execute("""
         async function asyncIncrement(value) {
@@ -151,7 +151,7 @@ public sealed class FullJavaScriptRuntimeCoverageTests
     [Fact]
     public void ExecutesGeneratorsAndIteratorProtocol()
     {
-        var engine = new FullJavaScriptRuntimeEngine();
+        var engine = new JavaScriptRuntimeEngine();
 
         engine.Execute("""
         function generatorSemantics() {
@@ -175,7 +175,7 @@ public sealed class FullJavaScriptRuntimeCoverageTests
     [Fact]
     public void ExecutesArrayObjectParameterAndRestDestructuring()
     {
-        var engine = new FullJavaScriptRuntimeEngine();
+        var engine = new JavaScriptRuntimeEngine();
 
         engine.Execute("""
         function destructuringSemantics() {
@@ -197,7 +197,7 @@ public sealed class FullJavaScriptRuntimeCoverageTests
     [Fact]
     public void ExecutesPrototypeConstructorAndObjectCreateSemantics()
     {
-        var engine = new FullJavaScriptRuntimeEngine();
+        var engine = new JavaScriptRuntimeEngine();
 
         engine.Execute("""
         function prototypeSemantics() {
@@ -223,7 +223,7 @@ public sealed class FullJavaScriptRuntimeCoverageTests
     [Fact]
     public void ScansRuntimeFunctionsWithoutParsingUnsupportedBodies()
     {
-        var engine = new FullJavaScriptRuntimeEngine();
+        var engine = new JavaScriptRuntimeEngine();
 
         var result = engine.Execute("""
         function wrapper() {
