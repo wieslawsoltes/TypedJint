@@ -119,9 +119,10 @@ public sealed class FullJavaScriptRuntimeEngine
             return;
         }
 
-        TryInvokeNoArgs(_engine.GetType().GetProperty("Advanced", BindingFlags.Instance | BindingFlags.Public)?.GetValue(_engine), "ProcessTasks");
-        TryInvokeNoArgs(_engine.GetType().GetProperty("Advanced", BindingFlags.Instance | BindingFlags.Public)?.GetValue(_engine), "RunAvailableContinuations");
-        TryInvokeNoArgs(_engine.GetType().GetProperty("Advanced", BindingFlags.Instance | BindingFlags.Public)?.GetValue(_engine), "RunJobs");
+        var advanced = _engine.GetType().GetProperty("Advanced", BindingFlags.Instance | BindingFlags.Public)?.GetValue(_engine);
+        TryInvokeNoArgs(advanced, "ProcessTasks");
+        TryInvokeNoArgs(advanced, "RunAvailableContinuations");
+        TryInvokeNoArgs(advanced, "RunJobs");
     }
 
     private static void TryInvokeNoArgs(object? target, string methodName)
@@ -131,7 +132,13 @@ public sealed class FullJavaScriptRuntimeEngine
             return;
         }
 
-        var method = target.GetType().GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public, Type.EmptyTypes);
+        var method = target.GetType().GetMethod(
+            methodName,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            types: Type.EmptyTypes,
+            modifiers: null);
+
         method?.Invoke(target, null);
     }
 }
@@ -181,7 +188,13 @@ public sealed class JintRuntimeFunction : ICompiledFunction
             return;
         }
 
-        var method = target.GetType().GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public, Type.EmptyTypes);
+        var method = target.GetType().GetMethod(
+            methodName,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            types: Type.EmptyTypes,
+            modifiers: null);
+
         method?.Invoke(target, null);
     }
 }
