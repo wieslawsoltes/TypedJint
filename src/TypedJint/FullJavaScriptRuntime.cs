@@ -132,14 +132,23 @@ public sealed class FullJavaScriptRuntimeEngine
             return;
         }
 
-        var method = target.GetType().GetMethod(
-            methodName,
-            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
-            binder: null,
-            types: Type.EmptyTypes,
-            modifiers: null);
+        try
+        {
+            var method = target.GetType().GetMethod(
+                methodName,
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                binder: null,
+                types: Type.EmptyTypes,
+                modifiers: null);
 
-        method?.Invoke(target, null);
+            method?.Invoke(target, null);
+        }
+        catch (TargetInvocationException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
+        }
     }
 }
 
@@ -188,14 +197,23 @@ public sealed class JintRuntimeFunction : ICompiledFunction
             return;
         }
 
-        var method = target.GetType().GetMethod(
-            methodName,
-            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
-            binder: null,
-            types: Type.EmptyTypes,
-            modifiers: null);
+        try
+        {
+            var method = target.GetType().GetMethod(
+                methodName,
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                binder: null,
+                types: Type.EmptyTypes,
+                modifiers: null);
 
-        method?.Invoke(target, null);
+            method?.Invoke(target, null);
+        }
+        catch (TargetInvocationException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
+        }
     }
 }
 
