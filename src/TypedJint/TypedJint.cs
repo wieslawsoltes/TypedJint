@@ -306,7 +306,8 @@ public sealed record JsStaticType(JsStaticTypeKind Kind, Type ClrType)
         "boolean" or "bool" => Boolean,
         "void" => Void,
         "Document" or "DomDocument" => Clr(typeof(DomDocument)),
-        "Element" or "HTMLElement" or "DomElement" => Clr(typeof(DomElement)),
+        "Element" or "HTMLElement" or "HTMLButtonElement" or "DomElement" => Clr(typeof(DomElement)),
+        "TextNode" or "DomTextNode" => Clr(typeof(DomTextNode)),
         "Event" or "DomEvent" => Clr(typeof(DomEvent)),
         _ => Object
     };
@@ -314,11 +315,17 @@ public sealed record JsStaticType(JsStaticTypeKind Kind, Type ClrType)
 
 public sealed record FunctionAnnotation(IReadOnlyDictionary<string, JsStaticType> Parameters, JsStaticType ReturnType);
 public sealed record JsFunctionDeclaration(string Name, IReadOnlyList<string> Parameters, FunctionAnnotation? Annotation, IReadOnlyList<JsStatement> Body, SourceSpan Span);
+
 public abstract record JsStatement;
+public sealed record JsBlockStatement(IReadOnlyList<JsStatement> Statements) : JsStatement;
 public sealed record JsVariableStatement(string Name, JsExpression Initializer) : JsStatement;
 public sealed record JsReturnStatement(JsExpression? Value) : JsStatement;
 public sealed record JsExpressionStatement(JsExpression Expression) : JsStatement;
 public sealed record JsAssignmentStatement(JsExpression Target, JsExpression Value) : JsStatement;
+public sealed record JsIfStatement(JsExpression Test, JsStatement Consequent, JsStatement? Alternate) : JsStatement;
+public sealed record JsWhileStatement(JsExpression Test, JsStatement Body) : JsStatement;
+public sealed record JsForStatement(JsStatement? Init, JsExpression? Test, JsStatement? Update, JsStatement Body) : JsStatement;
+
 public abstract record JsExpression;
 public sealed record JsLiteralExpression(object? Value) : JsExpression;
 public sealed record JsIdentifierExpression(string Name) : JsExpression;
@@ -326,6 +333,7 @@ public sealed record JsMemberExpression(JsExpression Target, string Member) : Js
 public sealed record JsCallExpression(JsExpression Target, IReadOnlyList<JsExpression> Arguments) : JsExpression;
 public sealed record JsBinaryExpression(string Operator, JsExpression Left, JsExpression Right) : JsExpression;
 public sealed record JsUnaryExpression(string Operator, JsExpression Operand) : JsExpression;
+public sealed record JsUpdateExpression(JsExpression Target, string Operator, bool Prefix) : JsExpression;
 
 public sealed class TypedJsCompiler
 {
@@ -422,33 +430,8 @@ public static class SimpleJsParser
         return new FunctionAnnotation(parameters, returnType);
     }
 
-    private static IReadOnlyList<JsStatement> ParseStatements(string body)
-    {
-        var result = new List<JsStatement>();
-        foreach (var text in SplitStatements(body))
-        {
-            var statement = text.Trim();
-            if (statement.Length == 0) continue;
-            if (statement.StartsWith("return", StringComparison.Ordinal))
-            {
-                result.Add(new JsReturnStatement(statement.Length == 6 ? null : ParseExpression(statement[6..].Trim())));
-                continue;
-            }
-            var variable = Regex.Match(statement, @"^(let|const|var)\s+(?<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?<expr>[\s\S]+)$");
-            if (variable.Success)
-            {
-                result.Add(new JsVariableStatement(variable.Groups["name"].Value, ParseExpression(variable.Groups["expr"].Value)));
-                continue;
-            }
-            var assignmentIndex = FindTopLevelAssignment(statement);
-            result.Add(assignmentIndex >= 0
-                ? new JsAssignmentStatement(ParseExpression(statement[..assignmentIndex]), ParseExpression(statement[(assignmentIndex + 1)..]))
-                : new JsExpressionStatement(ParseExpression(statement)));
-        }
-        return result;
-    }
-
-    private static JsExpression ParseExpression(string expression) => new ExpressionParser(expression).Parse();
+    private static IReadOnlyList<JsStatement> ParseStatements(string body) => new StatementParser(body).ParseStatements();
+    internal static JsExpression ParseExpression(string expression) => new ExpressionParser(expression).Parse();
     private static IReadOnlyList<string> SplitComma(string text) => text.Split(',').Select(x => x.Trim()).ToArray();
 
     private static int FindMatchingBrace(string source, int openBrace)
@@ -459,7 +442,7 @@ public static class SimpleJsParser
         for (var i = openBrace; i < source.Length; i++)
         {
             var c = source[i];
-            if (inString) { if (c == quote && source[i - 1] != '\\') inString = false; continue; }
+            if (inString) { if (c == quote && (i == 0 || source[i - 1] != '\\')) inString = false; continue; }
             if (c is '\'' or '"') { inString = true; quote = c; continue; }
             if (c == '{') depth++;
             if (c == '}') depth--;
@@ -468,7 +451,7 @@ public static class SimpleJsParser
         throw new FormatException("Unterminated function body.");
     }
 
-    private static int FindTopLevelAssignment(string text)
+    internal static int FindTopLevelAssignment(string text)
     {
         var depth = 0; var inString = false; var quote = '\0';
         for (var i = 0; i < text.Length; i++)
@@ -476,34 +459,273 @@ public static class SimpleJsParser
             var c = text[i];
             if (inString) { if (c == quote && (i == 0 || text[i - 1] != '\\')) inString = false; continue; }
             if (c is '\'' or '"') { inString = true; quote = c; continue; }
-            if (c == '(') depth++;
-            if (c == ')') depth--;
-            if (depth == 0 && c == '=' && (i + 1 >= text.Length || text[i + 1] != '=') && (i == 0 || text[i - 1] is not ('!' or '<' or '>'))) return i;
+            if (c is '(' or '[' or '{') depth++;
+            if (c is ')' or ']' or '}') depth--;
+            if (depth == 0 && c == '=')
+            {
+                var previous = i > 0 ? text[i - 1] : '\0';
+                var next = i + 1 < text.Length ? text[i + 1] : '\0';
+                if (previous is not ('!' or '<' or '>' or '=') && next != '=' && next != '>') return i;
+            }
         }
         return -1;
     }
 
-    private static IEnumerable<string> SplitStatements(string body)
-    {
-        var sb = new StringBuilder(); var depth = 0; var inString = false; var quote = '\0';
-        foreach (var c in body)
-        {
-            if (inString) { sb.Append(c); if (c == quote) inString = false; continue; }
-            if (c is '\'' or '"') { inString = true; quote = c; sb.Append(c); continue; }
-            if (c == '(') depth++;
-            if (c == ')') depth--;
-            if (c == ';' && depth == 0) { yield return sb.ToString(); sb.Clear(); continue; }
-            sb.Append(c);
-        }
-        if (sb.Length > 0) yield return sb.ToString();
-    }
-
-    private static SourceSpan ComputeSpan(string source, int start, int length)
+    internal static SourceSpan ComputeSpan(string source, int start, int length)
     {
         var line = 1; var column = 1;
         for (var i = 0; i < start; i++) { if (source[i] == '\n') { line++; column = 1; } else column++; }
         return new SourceSpan(start, length, line, column);
     }
+}
+
+internal sealed class StatementParser
+{
+    private static readonly Regex VariableRegex = new(@"^(let|const|var)\s+(?<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?<expr>[\s\S]+)$", RegexOptions.Compiled);
+    private readonly string _text;
+    private int _position;
+
+    public StatementParser(string text) => _text = text;
+
+    public IReadOnlyList<JsStatement> ParseStatements()
+    {
+        var result = new List<JsStatement>();
+        while (true)
+        {
+            SkipWhiteSpaceAndComments();
+            if (IsEnd || Current == '}') break;
+            result.Add(ParseStatement());
+        }
+        return result;
+    }
+
+    private JsStatement ParseStatement()
+    {
+        SkipWhiteSpaceAndComments();
+        if (Match('{')) return ParseBlockAfterOpenBrace();
+        if (MatchKeyword("if")) return ParseIf();
+        if (MatchKeyword("while")) return ParseWhile();
+        if (MatchKeyword("for")) return ParseFor();
+
+        var simple = ReadUntilStatementEnd();
+        return ParseSimpleStatement(simple);
+    }
+
+    private JsBlockStatement ParseBlockAfterOpenBrace()
+    {
+        var statements = new List<JsStatement>();
+        while (true)
+        {
+            SkipWhiteSpaceAndComments();
+            if (IsEnd) throw new FormatException("Unterminated block statement.");
+            if (Match('}')) break;
+            statements.Add(ParseStatement());
+        }
+        return new JsBlockStatement(statements);
+    }
+
+    private JsIfStatement ParseIf()
+    {
+        var test = SimpleJsParser.ParseExpression(ReadParenthesized());
+        var consequent = ParseStatement();
+        SkipWhiteSpaceAndComments();
+        var alternate = MatchKeyword("else") ? ParseStatement() : null;
+        return new JsIfStatement(test, consequent, alternate);
+    }
+
+    private JsWhileStatement ParseWhile()
+    {
+        var test = SimpleJsParser.ParseExpression(ReadParenthesized());
+        var body = ParseStatement();
+        return new JsWhileStatement(test, body);
+    }
+
+    private JsForStatement ParseFor()
+    {
+        var header = ReadParenthesized();
+        var parts = SplitTopLevel(header, ';').ToArray();
+        if (parts.Length != 3) throw new FormatException("for statement requires init; test; update header.");
+        var init = string.IsNullOrWhiteSpace(parts[0]) ? null : ParseSimpleStatement(parts[0]);
+        var test = string.IsNullOrWhiteSpace(parts[1]) ? null : SimpleJsParser.ParseExpression(parts[1]);
+        var update = string.IsNullOrWhiteSpace(parts[2]) ? null : ParseSimpleStatement(parts[2]);
+        var body = ParseStatement();
+        return new JsForStatement(init, test, update, body);
+    }
+
+    private static JsStatement ParseSimpleStatement(string text)
+    {
+        var statement = text.Trim();
+        if (statement.EndsWith(';')) statement = statement[..^1].TrimEnd();
+        if (statement.Length == 0) return new JsBlockStatement(Array.Empty<JsStatement>());
+
+        if (IsKeywordStatement(statement, "return"))
+        {
+            var rest = statement.Length == 6 ? string.Empty : statement[6..].Trim();
+            return new JsReturnStatement(rest.Length == 0 ? null : SimpleJsParser.ParseExpression(rest));
+        }
+
+        var variable = VariableRegex.Match(statement);
+        if (variable.Success)
+        {
+            return new JsVariableStatement(variable.Groups["name"].Value, SimpleJsParser.ParseExpression(variable.Groups["expr"].Value));
+        }
+
+        var assignmentIndex = SimpleJsParser.FindTopLevelAssignment(statement);
+        return assignmentIndex >= 0
+            ? new JsAssignmentStatement(SimpleJsParser.ParseExpression(statement[..assignmentIndex]), SimpleJsParser.ParseExpression(statement[(assignmentIndex + 1)..]))
+            : new JsExpressionStatement(SimpleJsParser.ParseExpression(statement));
+    }
+
+    private string ReadUntilStatementEnd()
+    {
+        var start = _position;
+        var depth = 0;
+        var inString = false;
+        var quote = '\0';
+
+        while (!IsEnd)
+        {
+            var c = Current;
+            if (inString)
+            {
+                if (c == quote && (_position == 0 || _text[_position - 1] != '\\')) inString = false;
+                _position++;
+                continue;
+            }
+
+            if (c is '\'' or '"') { inString = true; quote = c; _position++; continue; }
+            if (c is '(' or '[' or '{') depth++;
+            if (c is ')' or ']' or '}')
+            {
+                if (depth == 0) break;
+                depth--;
+            }
+
+            if (c == ';' && depth == 0)
+            {
+                _position++;
+                break;
+            }
+
+            _position++;
+        }
+
+        return _text[start.._position];
+    }
+
+    private string ReadParenthesized()
+    {
+        SkipWhiteSpaceAndComments();
+        if (!Match('(')) throw new FormatException("Expected '('.");
+        var start = _position;
+        var depth = 1;
+        var inString = false;
+        var quote = '\0';
+
+        while (!IsEnd)
+        {
+            var c = Current;
+            if (inString)
+            {
+                if (c == quote && (_position == 0 || _text[_position - 1] != '\\')) inString = false;
+                _position++;
+                continue;
+            }
+
+            if (c is '\'' or '"') { inString = true; quote = c; _position++; continue; }
+            if (c == '(') depth++;
+            if (c == ')') depth--;
+            if (depth == 0)
+            {
+                var value = _text[start.._position];
+                _position++;
+                return value;
+            }
+
+            _position++;
+        }
+
+        throw new FormatException("Unterminated parenthesized expression.");
+    }
+
+    private static IEnumerable<string> SplitTopLevel(string text, char separator)
+    {
+        var start = 0;
+        var depth = 0;
+        var inString = false;
+        var quote = '\0';
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (inString)
+            {
+                if (c == quote && (i == 0 || text[i - 1] != '\\')) inString = false;
+                continue;
+            }
+
+            if (c is '\'' or '"') { inString = true; quote = c; continue; }
+            if (c is '(' or '[' or '{') depth++;
+            if (c is ')' or ']' or '}') depth--;
+            if (c == separator && depth == 0)
+            {
+                yield return text[start..i].Trim();
+                start = i + 1;
+            }
+        }
+
+        yield return text[start..].Trim();
+    }
+
+    private void SkipWhiteSpaceAndComments()
+    {
+        while (!IsEnd)
+        {
+            if (char.IsWhiteSpace(Current)) { _position++; continue; }
+            if (Current == '/' && Peek(1) == '/')
+            {
+                _position += 2;
+                while (!IsEnd && Current != '\n') _position++;
+                continue;
+            }
+
+            if (Current == '/' && Peek(1) == '*')
+            {
+                _position += 2;
+                while (!IsEnd && !(Current == '*' && Peek(1) == '/')) _position++;
+                if (!IsEnd) _position += 2;
+                continue;
+            }
+
+            break;
+        }
+    }
+
+    private bool MatchKeyword(string keyword)
+    {
+        SkipWhiteSpaceAndComments();
+        if (!_text.AsSpan(_position).StartsWith(keyword, StringComparison.Ordinal)) return false;
+        var end = _position + keyword.Length;
+        if (end < _text.Length && IsIdentifierPart(_text[end])) return false;
+        if (_position > 0 && IsIdentifierPart(_text[_position - 1])) return false;
+        _position = end;
+        return true;
+    }
+
+    private bool Match(char c)
+    {
+        SkipWhiteSpaceAndComments();
+        if (IsEnd || Current != c) return false;
+        _position++;
+        return true;
+    }
+
+    private static bool IsKeywordStatement(string text, string keyword) =>
+        text == keyword || text.StartsWith(keyword + " ", StringComparison.Ordinal) || text.StartsWith(keyword + "\t", StringComparison.Ordinal) || text.StartsWith(keyword + "\r", StringComparison.Ordinal) || text.StartsWith(keyword + "\n", StringComparison.Ordinal);
+
+    private static bool IsIdentifierPart(char c) => char.IsLetterOrDigit(c) || c is '_' or '$';
+    private char Current => _text[_position];
+    private char Peek(int offset) => _position + offset < _text.Length ? _text[_position + offset] : '\0';
+    private bool IsEnd => _position >= _text.Length;
 }
 
 internal sealed class ExpressionParser
@@ -517,12 +739,20 @@ internal sealed class ExpressionParser
     {
         JsExpression left;
         var unary = Current.UnaryPrecedence;
-        if (unary != 0 && unary >= parentPrecedence)
+        if (Current.Kind == TokenKind.Operator && Current.Text is "++" or "--")
+        {
+            var op = Next().Text;
+            left = new JsUpdateExpression(ParsePostfix(ParsePrimary()), op, Prefix: true);
+        }
+        else if (unary != 0 && unary >= parentPrecedence)
         {
             var op = Next().Text;
             left = new JsUnaryExpression(op, ParseBinary(unary));
         }
-        else left = ParsePostfix(ParsePrimary());
+        else
+        {
+            left = ParsePostfix(ParsePrimary());
+        }
 
         while (true)
         {
@@ -568,6 +798,11 @@ internal sealed class ExpressionParser
                 expression = new JsCallExpression(expression, args);
                 continue;
             }
+            if (Current.Kind == TokenKind.Operator && Current.Text is "++" or "--")
+            {
+                expression = new JsUpdateExpression(expression, Next().Text, Prefix: false);
+                continue;
+            }
             return expression;
         }
     }
@@ -585,12 +820,35 @@ internal sealed class ExpressionParser
             if (char.IsWhiteSpace(c)) { i++; continue; }
             if (char.IsDigit(c)) { var start = i; while (i < text.Length && (char.IsDigit(text[i]) || text[i] == '.')) i++; yield return new Token(TokenKind.Number, text[start..i]); continue; }
             if (char.IsLetter(c) || c is '_' or '$') { var start = i; while (i < text.Length && (char.IsLetterOrDigit(text[i]) || text[i] is '_' or '$')) i++; yield return new Token(TokenKind.Identifier, text[start..i]); continue; }
-            if (c is '\'' or '"') { var quote = c; var start = ++i; while (i < text.Length && text[i] != quote) i++; yield return new Token(TokenKind.String, text[start..i]); i++; continue; }
+            if (c is '\'' or '"')
+            {
+                var quote = c;
+                var builder = new StringBuilder();
+                i++;
+                while (i < text.Length && text[i] != quote)
+                {
+                    if (text[i] == '\\' && i + 1 < text.Length)
+                    {
+                        i++;
+                        builder.Append(text[i] switch { 'n' => '\n', 'r' => '\r', 't' => '\t', '\\' => '\\', '\'' => '\'', '"' => '"', var escaped => escaped });
+                        i++;
+                        continue;
+                    }
+                    builder.Append(text[i]);
+                    i++;
+                }
+                if (i >= text.Length) throw new NotSupportedException("Unterminated string literal.");
+                i++;
+                yield return new Token(TokenKind.String, builder.ToString());
+                continue;
+            }
+            var three = i + 2 < text.Length ? text.Substring(i, 3) : string.Empty;
+            if (three is "===" or "!==") { yield return new Token(TokenKind.Operator, three); i += 3; continue; }
             var two = i + 1 < text.Length ? text.Substring(i, 2) : string.Empty;
-            if (two is "==" or "!=" or "<=" or ">=" or "&&" or "||") { yield return new Token(TokenKind.Operator, two); i += 2; continue; }
+            if (two is "++" or "--" or "==" or "!=" or "<=" or ">=" or "&&" or "||") { yield return new Token(TokenKind.Operator, two); i += 2; continue; }
             yield return c switch
             {
-                '+' or '-' or '*' or '/' or '<' or '>' or '!' => new Token(TokenKind.Operator, c.ToString(CultureInfo.InvariantCulture)),
+                '+' or '-' or '*' or '/' or '%' or '<' or '>' or '!' => new Token(TokenKind.Operator, c.ToString(CultureInfo.InvariantCulture)),
                 '.' => new Token(TokenKind.Dot, "."), '(' => new Token(TokenKind.OpenParen, "("), ')' => new Token(TokenKind.CloseParen, ")"), ',' => new Token(TokenKind.Comma, ","),
                 _ => throw new NotSupportedException($"Unsupported character '{c}'.")
             };
@@ -603,7 +861,7 @@ internal sealed class ExpressionParser
     private sealed record Token(TokenKind Kind, string Text)
     {
         public int UnaryPrecedence => Kind == TokenKind.Operator && Text is "+" or "-" or "!" ? 7 : 0;
-        public int BinaryPrecedence => Kind != TokenKind.Operator ? 0 : Text switch { "*" or "/" => 6, "+" or "-" => 5, "<" or "<=" or ">" or ">=" => 4, "==" or "!=" => 3, "&&" => 2, "||" => 1, _ => 0 };
+        public int BinaryPrecedence => Kind != TokenKind.Operator ? 0 : Text switch { "*" or "/" or "%" => 6, "+" or "-" => 5, "<" or "<=" or ">" or ">=" => 4, "==" or "!=" or "===" or "!==" => 3, "&&" => 2, "||" => 1, _ => 0 };
     }
 }
 
@@ -638,10 +896,14 @@ public sealed class ExpressionTreeBackend
 
     private Expression CompileStatement(JsStatement statement, LabelTarget returnTarget) => statement switch
     {
+        JsBlockStatement block => Expression.Block(block.Statements.Select(x => CompileStatement(x, returnTarget))),
         JsVariableStatement variable => CompileVariable(variable),
         JsReturnStatement ret => Expression.Return(returnTarget, ret.Value is null ? Default(returnTarget.Type) : ConvertTo(CompileExpression(ret.Value), returnTarget.Type)),
         JsExpressionStatement expr => CompileExpression(expr.Expression),
         JsAssignmentStatement assignment => CompileAssignment(assignment),
+        JsIfStatement ifStatement => CompileIf(ifStatement, returnTarget),
+        JsWhileStatement whileStatement => CompileWhile(whileStatement, returnTarget),
+        JsForStatement forStatement => CompileFor(forStatement, returnTarget),
         _ => throw new NotSupportedException($"Unsupported statement '{statement.GetType().Name}'.")
     };
 
@@ -660,6 +922,43 @@ public sealed class ExpressionTreeBackend
         return Expression.Assign(target, ConvertTo(CompileExpression(assignment.Value), target.Type));
     }
 
+    private Expression CompileIf(JsIfStatement statement, LabelTarget returnTarget)
+    {
+        var test = ConvertTo(CompileExpression(statement.Test), typeof(bool));
+        var consequent = CompileStatement(statement.Consequent, returnTarget);
+        var alternate = statement.Alternate is null ? Expression.Empty() : CompileStatement(statement.Alternate, returnTarget);
+        return Expression.IfThenElse(test, consequent, alternate);
+    }
+
+    private Expression CompileWhile(JsWhileStatement statement, LabelTarget returnTarget)
+    {
+        var breakTarget = Expression.Label("while_break");
+        return Expression.Loop(
+            Expression.IfThenElse(
+                ConvertTo(CompileExpression(statement.Test), typeof(bool)),
+                CompileStatement(statement.Body, returnTarget),
+                Expression.Break(breakTarget)),
+            breakTarget);
+    }
+
+    private Expression CompileFor(JsForStatement statement, LabelTarget returnTarget)
+    {
+        var breakTarget = Expression.Label("for_break");
+        var expressions = new List<Expression>();
+        if (statement.Init is not null) expressions.Add(CompileStatement(statement.Init, returnTarget));
+
+        var loopExpressions = new List<Expression>();
+        if (statement.Test is not null)
+        {
+            loopExpressions.Add(Expression.IfThen(Expression.Not(ConvertTo(CompileExpression(statement.Test), typeof(bool))), Expression.Break(breakTarget)));
+        }
+
+        loopExpressions.Add(CompileStatement(statement.Body, returnTarget));
+        if (statement.Update is not null) loopExpressions.Add(CompileStatement(statement.Update, returnTarget));
+        expressions.Add(Expression.Loop(Expression.Block(loopExpressions), breakTarget));
+        return Expression.Block(expressions);
+    }
+
     private Expression CompileExpression(JsExpression expression) => expression switch
     {
         JsLiteralExpression literal => CompileLiteral(literal.Value),
@@ -668,6 +967,7 @@ public sealed class ExpressionTreeBackend
         JsCallExpression call => CompileCall(call),
         JsBinaryExpression binary => CompileBinary(binary),
         JsUnaryExpression unary => CompileUnary(unary),
+        JsUpdateExpression update => CompileUpdate(update),
         _ => throw new NotSupportedException($"Unsupported expression '{expression.GetType().Name}'.")
     };
 
@@ -725,6 +1025,17 @@ public sealed class ExpressionTreeBackend
         };
     }
 
+    private Expression CompileUpdate(JsUpdateExpression update)
+    {
+        var target = CompileAssignable(update.Target);
+        return update.Operator switch
+        {
+            "++" => update.Prefix ? Expression.PreIncrementAssign(target) : Expression.PostIncrementAssign(target),
+            "--" => update.Prefix ? Expression.PreDecrementAssign(target) : Expression.PostDecrementAssign(target),
+            _ => throw new NotSupportedException($"Update operator '{update.Operator}' is not supported.")
+        };
+    }
+
     private Expression CompileBinary(JsBinaryExpression binary)
     {
         var left = CompileExpression(binary.Left);
@@ -736,12 +1047,13 @@ public sealed class ExpressionTreeBackend
             "-" => Expression.Subtract(ConvertTo(left, typeof(double)), ConvertTo(right, typeof(double))),
             "*" => Expression.Multiply(ConvertTo(left, typeof(double)), ConvertTo(right, typeof(double))),
             "/" => Expression.Divide(ConvertTo(left, typeof(double)), ConvertTo(right, typeof(double))),
+            "%" => Expression.Modulo(ConvertTo(left, typeof(double)), ConvertTo(right, typeof(double))),
             "<" => Expression.LessThan(ConvertTo(left, typeof(double)), ConvertTo(right, typeof(double))),
             "<=" => Expression.LessThanOrEqual(ConvertTo(left, typeof(double)), ConvertTo(right, typeof(double))),
             ">" => Expression.GreaterThan(ConvertTo(left, typeof(double)), ConvertTo(right, typeof(double))),
             ">=" => Expression.GreaterThanOrEqual(ConvertTo(left, typeof(double)), ConvertTo(right, typeof(double))),
-            "==" => Expression.Equal(ConvertTo(left, right.Type), right),
-            "!=" => Expression.NotEqual(ConvertTo(left, right.Type), right),
+            "==" or "===" => Expression.Equal(ConvertTo(left, right.Type), right),
+            "!=" or "!==" => Expression.NotEqual(ConvertTo(left, right.Type), right),
             "&&" => Expression.AndAlso(ConvertTo(left, typeof(bool)), ConvertTo(right, typeof(bool))),
             "||" => Expression.OrElse(ConvertTo(left, typeof(bool)), ConvertTo(right, typeof(bool))),
             _ => throw new NotSupportedException($"Operator '{binary.Operator}' is not supported.")
@@ -751,4 +1063,157 @@ public sealed class ExpressionTreeBackend
     private static bool CanConvert(Type source, Type target) => target.IsAssignableFrom(source) || source == typeof(double) && target == typeof(int) || source == typeof(int) && target == typeof(double) || target == typeof(object);
     private static Expression ConvertTo(Expression expression, Type targetType) => expression.Type == targetType ? expression : Expression.Convert(expression, targetType);
     private static Expression Default(Type type) => type == typeof(void) ? Expression.Empty() : Expression.Default(type);
+}
+
+public static class TypedJintTranspiler
+{
+    public static string TranspileToCSharp(string source, string className = "ScriptModule")
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("// <auto-generated />");
+        builder.AppendLine("#nullable enable");
+        builder.AppendLine("using TypedJint;");
+        builder.AppendLine();
+        builder.Append("public static class ").Append(SanitizeIdentifier(className)).AppendLine();
+        builder.AppendLine("{");
+        foreach (var fn in SimpleJsParser.ParseFunctions(source))
+        {
+            EmitFunction(builder, fn, 1);
+            builder.AppendLine();
+        }
+        builder.AppendLine("}");
+        return builder.ToString();
+    }
+
+    public static string TranspileFunctionToCSharp(JsFunctionDeclaration function)
+    {
+        var builder = new StringBuilder();
+        EmitFunction(builder, function, 0);
+        return builder.ToString();
+    }
+
+    private static void EmitFunction(StringBuilder builder, JsFunctionDeclaration function, int indent)
+    {
+        var pad = Pad(indent);
+        var returnType = function.Annotation is null ? "object?" : ToCSharpType(function.Annotation.ReturnType);
+        var parameters = function.Parameters.Select(parameter =>
+        {
+            var type = function.Annotation is not null && function.Annotation.Parameters.TryGetValue(parameter, out var staticType) ? ToCSharpType(staticType) : "object?";
+            return type + " " + SanitizeIdentifier(parameter);
+        });
+
+        builder.Append(pad).Append("public static ").Append(returnType).Append(' ').Append(SanitizeIdentifier(function.Name)).Append('(').Append(string.Join(", ", parameters)).AppendLine(")");
+        builder.Append(pad).AppendLine("{");
+        foreach (var statement in function.Body)
+        {
+            EmitStatement(builder, statement, indent + 1);
+        }
+        builder.Append(pad).AppendLine("}");
+    }
+
+    private static void EmitStatement(StringBuilder builder, JsStatement statement, int indent)
+    {
+        var pad = Pad(indent);
+        switch (statement)
+        {
+            case JsBlockStatement block:
+                builder.Append(pad).AppendLine("{");
+                foreach (var child in block.Statements) EmitStatement(builder, child, indent + 1);
+                builder.Append(pad).AppendLine("}");
+                break;
+            case JsVariableStatement variable:
+                builder.Append(pad).Append("var ").Append(SanitizeIdentifier(variable.Name)).Append(" = ").Append(EmitExpression(variable.Initializer)).AppendLine(";");
+                break;
+            case JsReturnStatement ret:
+                builder.Append(pad).Append("return");
+                if (ret.Value is not null) builder.Append(' ').Append(EmitExpression(ret.Value));
+                builder.AppendLine(";");
+                break;
+            case JsExpressionStatement expression:
+                builder.Append(pad).Append(EmitExpression(expression.Expression)).AppendLine(";");
+                break;
+            case JsAssignmentStatement assignment:
+                builder.Append(pad).Append(EmitExpression(assignment.Target)).Append(" = ").Append(EmitExpression(assignment.Value)).AppendLine(";");
+                break;
+            case JsIfStatement ifStatement:
+                builder.Append(pad).Append("if (").Append(EmitExpression(ifStatement.Test)).AppendLine(")");
+                EmitEmbeddedStatement(builder, ifStatement.Consequent, indent);
+                if (ifStatement.Alternate is not null)
+                {
+                    builder.Append(pad).AppendLine("else");
+                    EmitEmbeddedStatement(builder, ifStatement.Alternate, indent);
+                }
+                break;
+            case JsWhileStatement whileStatement:
+                builder.Append(pad).Append("while (").Append(EmitExpression(whileStatement.Test)).AppendLine(")");
+                EmitEmbeddedStatement(builder, whileStatement.Body, indent);
+                break;
+            case JsForStatement forStatement:
+                builder.Append(pad).Append("for (").Append(EmitForPart(forStatement.Init)).Append("; ").Append(forStatement.Test is null ? string.Empty : EmitExpression(forStatement.Test)).Append("; ").Append(EmitForPart(forStatement.Update)).AppendLine(")");
+                EmitEmbeddedStatement(builder, forStatement.Body, indent);
+                break;
+            default:
+                builder.Append(pad).Append("// unsupported: ").AppendLine(statement.GetType().Name);
+                break;
+        }
+    }
+
+    private static void EmitEmbeddedStatement(StringBuilder builder, JsStatement statement, int indent)
+    {
+        if (statement is JsBlockStatement)
+        {
+            EmitStatement(builder, statement, indent);
+            return;
+        }
+
+        builder.Append(Pad(indent)).AppendLine("{");
+        EmitStatement(builder, statement, indent + 1);
+        builder.Append(Pad(indent)).AppendLine("}");
+    }
+
+    private static string EmitForPart(JsStatement? statement)
+    {
+        return statement switch
+        {
+            null => string.Empty,
+            JsVariableStatement variable => "var " + SanitizeIdentifier(variable.Name) + " = " + EmitExpression(variable.Initializer),
+            JsAssignmentStatement assignment => EmitExpression(assignment.Target) + " = " + EmitExpression(assignment.Value),
+            JsExpressionStatement expression => EmitExpression(expression.Expression),
+            _ => statement.GetType().Name
+        };
+    }
+
+    private static string EmitExpression(JsExpression expression)
+    {
+        return expression switch
+        {
+            JsLiteralExpression { Value: null } => "null",
+            JsLiteralExpression { Value: string text } => FormatStringLiteral(text),
+            JsLiteralExpression { Value: bool value } => value ? "true" : "false",
+            JsLiteralExpression { Value: double value } => value.ToString("R", CultureInfo.InvariantCulture),
+            JsLiteralExpression literal => Convert.ToString(literal.Value, CultureInfo.InvariantCulture) ?? string.Empty,
+            JsIdentifierExpression identifier => SanitizeIdentifier(identifier.Name),
+            JsMemberExpression member => EmitExpression(member.Target) + "." + member.Member,
+            JsCallExpression call => EmitExpression(call.Target) + "(" + string.Join(", ", call.Arguments.Select(EmitExpression)) + ")",
+            JsBinaryExpression binary => "(" + EmitExpression(binary.Left) + " " + MapOperator(binary.Operator) + " " + EmitExpression(binary.Right) + ")",
+            JsUnaryExpression unary => "(" + unary.Operator + EmitExpression(unary.Operand) + ")",
+            JsUpdateExpression update => update.Prefix ? update.Operator + EmitExpression(update.Target) : EmitExpression(update.Target) + update.Operator,
+            _ => expression.GetType().Name
+        };
+    }
+
+    private static string MapOperator(string op) => op switch { "===" => "==", "!==" => "!=", _ => op };
+    private static string ToCSharpType(JsStaticType type) => type.Kind switch
+    {
+        JsStaticTypeKind.Void => "void",
+        JsStaticTypeKind.Number => "double",
+        JsStaticTypeKind.String => "string",
+        JsStaticTypeKind.Boolean => "bool",
+        JsStaticTypeKind.Clr => type.ClrType.Name,
+        _ => "object?"
+    };
+
+    private static string FormatStringLiteral(string value) => "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal).Replace("\r", "\\r", StringComparison.Ordinal).Replace("\n", "\\n", StringComparison.Ordinal).Replace("\t", "\\t", StringComparison.Ordinal) + "\"";
+    private static string SanitizeIdentifier(string value) => value switch { "class" or "namespace" or "public" or "private" or "protected" or "internal" or "static" or "void" or "double" or "string" or "bool" or "object" or "return" => "@" + value, _ => value };
+    private static string Pad(int indent) => new(' ', indent * 4);
 }
