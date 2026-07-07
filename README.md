@@ -6,6 +6,7 @@ It keeps Jint as the JavaScript semantic runtime, then adds:
 
 - JSDoc-based type annotations
 - safe-function compilation to .NET delegates through expression trees
+- strongly typed compiled delegate access for low-overhead invocation
 - verified compiler output: semantic signature, delegate signature, normalized IR, C# preview, and diagnostics
 - optional runtime equivalence checks against Jint for pure functions
 - direct typed CLR/DOM interop
@@ -89,6 +90,9 @@ var verified = engine.ExecuteVerified(
 
 verified.ThrowIfUnverified();
 
+var sumEven = verified.Compilation.GetDelegate<Func<double, double>>("sumEven");
+Console.WriteLine(sumEven(10));
+
 Console.WriteLine(verified.CompilerOutputs["sumEven"].SemanticSignature);
 Console.WriteLine(verified.CompilerOutputs["sumEven"].DelegateSignature);
 Console.WriteLine(verified.CompilerOutputs["sumEven"].NormalizedIr);
@@ -162,6 +166,21 @@ The playground shows:
 - compiler diagnostics
 - verified runtime results
 - DOM interop output
+
+## Benchmarks
+
+Run BenchmarkDotNet benchmarks:
+
+```bash
+dotnet run --project benchmarks/TypedJint.Benchmarks -c Release
+```
+
+The benchmark suite compares:
+
+- `TypedJintEngine.Invoke` using the object-oriented invocation path
+- `ICompiledFunction.Invoke`
+- direct strongly typed compiled delegates
+- baseline Jint invocation
 
 ## Build
 
