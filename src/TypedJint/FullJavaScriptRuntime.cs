@@ -5,14 +5,14 @@ using Jint;
 
 namespace TypedJint;
 
-public sealed class FullJavaScriptRuntimeOptions
+public sealed class JavaScriptRuntimeOptions
 {
     public bool AllowClr { get; init; } = true;
     public bool DrainPromiseJobsAfterInvoke { get; init; } = true;
     public Action<TypedDiagnostic>? DiagnosticSink { get; init; }
 }
 
-public sealed class FullJavaScriptRuntimeResult
+public sealed class JavaScriptRuntimeResult
 {
     public required IReadOnlyDictionary<string, ICompiledFunction> RuntimeFunctions { get; init; }
     public required IReadOnlyList<string> ClassDeclarations { get; init; }
@@ -21,15 +21,15 @@ public sealed class FullJavaScriptRuntimeResult
     public bool Verified => Diagnostics.All(x => x.Severity != TypedDiagnosticSeverity.Error);
 }
 
-public sealed class FullJavaScriptRuntimeEngine
+public sealed class JavaScriptRuntimeEngine
 {
-    private readonly FullJavaScriptRuntimeOptions _options;
+    private readonly JavaScriptRuntimeOptions _options;
     private readonly Engine _engine;
     private readonly Dictionary<string, ICompiledFunction> _runtimeFunctions = new(StringComparer.Ordinal);
 
-    public FullJavaScriptRuntimeEngine(FullJavaScriptRuntimeOptions? options = null)
+    public JavaScriptRuntimeEngine(JavaScriptRuntimeOptions? options = null)
     {
-        _options = options ?? new FullJavaScriptRuntimeOptions();
+        _options = options ?? new JavaScriptRuntimeOptions();
         _engine = _options.AllowClr ? new Engine(cfg => cfg.AllowClr()) : new Engine();
         Document = new DomDocument();
         SetValue("document", Document);
@@ -40,15 +40,15 @@ public sealed class FullJavaScriptRuntimeEngine
     public DomDocument Document { get; }
     public IReadOnlyDictionary<string, ICompiledFunction> RuntimeFunctions => new ReadOnlyDictionary<string, ICompiledFunction>(_runtimeFunctions);
 
-    public FullJavaScriptRuntimeEngine SetValue(string name, object? value)
+    public JavaScriptRuntimeEngine SetValue(string name, object? value)
     {
         _engine.SetValue(name, value);
         return this;
     }
 
-    public FullJavaScriptRuntimeEngine RegisterHostObject(string name, object instance) => SetValue(name, instance);
+    public JavaScriptRuntimeEngine RegisterHostObject(string name, object instance) => SetValue(name, instance);
 
-    public FullJavaScriptRuntimeResult Execute(string source)
+    public JavaScriptRuntimeResult Execute(string source)
     {
         ArgumentNullException.ThrowIfNull(source);
 
@@ -56,17 +56,17 @@ public sealed class FullJavaScriptRuntimeEngine
         _engine.Execute(source);
         DrainPromiseJobs();
 
-        var declarations = FullJavaScriptDeclarationScanner.Scan(source);
+        var declarations = JavaScriptDeclarationScanner.Scan(source);
         _runtimeFunctions.Clear();
 
         foreach (var functionName in declarations.Functions)
         {
-            var function = new JintRuntimeFunction(functionName, _engine, _options.DrainPromiseJobsAfterInvoke);
+            var function = new JavaScriptRuntimeFunction(functionName, _engine, _options.DrainPromiseJobsAfterInvoke);
             _runtimeFunctions[functionName] = function;
             diagnostics.Add(new TypedDiagnostic(
                 "TJ1000",
                 TypedDiagnosticSeverity.Info,
-                $"Function '{functionName}' is available through the full JavaScript runtime backend."));
+                $"Function '{functionName}' is available through the JavaScript runtime backend."));
         }
 
         foreach (var className in declarations.Classes)
@@ -74,7 +74,7 @@ public sealed class FullJavaScriptRuntimeEngine
             diagnostics.Add(new TypedDiagnostic(
                 "TJ1001",
                 TypedDiagnosticSeverity.Info,
-                $"Class '{className}' is available to JavaScript through the full runtime backend."));
+                $"Class '{className}' is available through the JavaScript runtime backend."));
         }
 
         foreach (var diagnostic in diagnostics)
@@ -82,7 +82,7 @@ public sealed class FullJavaScriptRuntimeEngine
             _options.DiagnosticSink?.Invoke(diagnostic);
         }
 
-        return new FullJavaScriptRuntimeResult
+        return new JavaScriptRuntimeResult
         {
             RuntimeFunctions = new ReadOnlyDictionary<string, ICompiledFunction>(_runtimeFunctions),
             ClassDeclarations = declarations.Classes,
@@ -152,13 +152,13 @@ public sealed class FullJavaScriptRuntimeEngine
     }
 }
 
-public sealed class JintRuntimeFunction : ICompiledFunction
+public sealed class JavaScriptRuntimeFunction : ICompiledFunction
 {
     private readonly Engine _engine;
     private readonly bool _drainPromiseJobs;
     private readonly Func<object?[], object?> _delegate;
 
-    public JintRuntimeFunction(string name, Engine engine, bool drainPromiseJobs)
+    public JavaScriptRuntimeFunction(string name, Engine engine, bool drainPromiseJobs)
     {
         Name = name;
         _engine = engine;
@@ -217,16 +217,16 @@ public sealed class JintRuntimeFunction : ICompiledFunction
     }
 }
 
-public sealed record FullJavaScriptDeclarationScanResult(
+public sealed record JavaScriptDeclarationScanResult(
     IReadOnlyList<string> Functions,
     IReadOnlyList<string> Classes);
 
-public static class FullJavaScriptDeclarationScanner
+public static class JavaScriptDeclarationScanner
 {
     private static readonly Regex FunctionRegex = new(@"(?:^|[^A-Za-z0-9_$])(?:async\s+)?function\s*\*?\s+(?<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*\(", RegexOptions.Compiled);
     private static readonly Regex ClassRegex = new(@"(?:^|[^A-Za-z0-9_$])class\s+(?<name>[A-Za-z_$][A-Za-z0-9_$]*)\b", RegexOptions.Compiled);
 
-    public static FullJavaScriptDeclarationScanResult Scan(string source)
+    public static JavaScriptDeclarationScanResult Scan(string source)
     {
         ArgumentNullException.ThrowIfNull(source);
 
@@ -242,6 +242,6 @@ public static class FullJavaScriptDeclarationScanner
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        return new FullJavaScriptDeclarationScanResult(functions, classes);
+        return new JavaScriptDeclarationScanResult(functions, classes);
     }
 }
