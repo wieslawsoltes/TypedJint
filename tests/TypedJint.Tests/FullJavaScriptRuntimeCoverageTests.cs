@@ -45,7 +45,7 @@ public sealed class FullJavaScriptRuntimeCoverageTests
         }
         """);
 
-        Assert.Equal(37.0, Convert.ToDouble(engine.Invoke("closureSemantics")));
+        Assert.Equal(40.0, Convert.ToDouble(engine.Invoke("closureSemantics")));
     }
 
     [Fact]
