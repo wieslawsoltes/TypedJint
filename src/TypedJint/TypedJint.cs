@@ -322,18 +322,24 @@ public sealed record JsVariableStatement(string Name, JsExpression Initializer) 
 public sealed record JsReturnStatement(JsExpression? Value) : JsStatement;
 public sealed record JsExpressionStatement(JsExpression Expression) : JsStatement;
 public sealed record JsAssignmentStatement(JsExpression Target, JsExpression Value) : JsStatement;
+public sealed record JsCompoundAssignmentStatement(JsExpression Target, string Operator, JsExpression Value) : JsStatement;
 public sealed record JsIfStatement(JsExpression Test, JsStatement Consequent, JsStatement? Alternate) : JsStatement;
 public sealed record JsWhileStatement(JsExpression Test, JsStatement Body) : JsStatement;
 public sealed record JsForStatement(JsStatement? Init, JsExpression? Test, JsStatement? Update, JsStatement Body) : JsStatement;
+public sealed record JsBreakStatement : JsStatement;
+public sealed record JsContinueStatement : JsStatement;
 
 public abstract record JsExpression;
 public sealed record JsLiteralExpression(object? Value) : JsExpression;
 public sealed record JsIdentifierExpression(string Name) : JsExpression;
 public sealed record JsMemberExpression(JsExpression Target, string Member) : JsExpression;
+public sealed record JsIndexExpression(JsExpression Target, JsExpression Index) : JsExpression;
 public sealed record JsCallExpression(JsExpression Target, IReadOnlyList<JsExpression> Arguments) : JsExpression;
 public sealed record JsBinaryExpression(string Operator, JsExpression Left, JsExpression Right) : JsExpression;
 public sealed record JsUnaryExpression(string Operator, JsExpression Operand) : JsExpression;
 public sealed record JsUpdateExpression(JsExpression Target, string Operator, bool Prefix) : JsExpression;
+public sealed record JsArrayExpression(IReadOnlyList<JsExpression> Elements) : JsExpression;
+public sealed record JsConditionalExpression(JsExpression Test, JsExpression Consequent, JsExpression Alternate) : JsExpression;
 
 public sealed class TypedJsCompiler
 {
@@ -451,7 +457,7 @@ public static class SimpleJsParser
         throw new FormatException("Unterminated function body.");
     }
 
-    internal static int FindTopLevelAssignment(string text)
+    internal static AssignmentMatch FindTopLevelAssignment(string text)
     {
         var depth = 0; var inString = false; var quote = '\0';
         for (var i = 0; i < text.Length; i++)
@@ -461,14 +467,21 @@ public static class SimpleJsParser
             if (c is '\'' or '"') { inString = true; quote = c; continue; }
             if (c is '(' or '[' or '{') depth++;
             if (c is ')' or ']' or '}') depth--;
-            if (depth == 0 && c == '=')
+            if (depth != 0) continue;
+
+            if (c is '+' or '-' or '*' or '/' or '%' && i + 1 < text.Length && text[i + 1] == '=')
+            {
+                return new AssignmentMatch(i, text.Substring(i, 2));
+            }
+
+            if (c == '=')
             {
                 var previous = i > 0 ? text[i - 1] : '\0';
                 var next = i + 1 < text.Length ? text[i + 1] : '\0';
-                if (previous is not ('!' or '<' or '>' or '=') && next != '=' && next != '>') return i;
+                if (previous is not ('!' or '<' or '>' or '=') && next != '=' && next != '>') return new AssignmentMatch(i, "=");
             }
         }
-        return -1;
+        return AssignmentMatch.None;
     }
 
     internal static SourceSpan ComputeSpan(string source, int start, int length)
@@ -477,6 +490,12 @@ public static class SimpleJsParser
         for (var i = 0; i < start; i++) { if (source[i] == '\n') { line++; column = 1; } else column++; }
         return new SourceSpan(start, length, line, column);
     }
+}
+
+internal readonly record struct AssignmentMatch(int Index, string Operator)
+{
+    public static readonly AssignmentMatch None = new(-1, string.Empty);
+    public bool Success => Index >= 0;
 }
 
 internal sealed class StatementParser
@@ -557,6 +576,8 @@ internal sealed class StatementParser
         var statement = text.Trim();
         if (statement.EndsWith(';')) statement = statement[..^1].TrimEnd();
         if (statement.Length == 0) return new JsBlockStatement(Array.Empty<JsStatement>());
+        if (statement == "break") return new JsBreakStatement();
+        if (statement == "continue") return new JsContinueStatement();
 
         if (IsKeywordStatement(statement, "return"))
         {
@@ -570,10 +591,17 @@ internal sealed class StatementParser
             return new JsVariableStatement(variable.Groups["name"].Value, SimpleJsParser.ParseExpression(variable.Groups["expr"].Value));
         }
 
-        var assignmentIndex = SimpleJsParser.FindTopLevelAssignment(statement);
-        return assignmentIndex >= 0
-            ? new JsAssignmentStatement(SimpleJsParser.ParseExpression(statement[..assignmentIndex]), SimpleJsParser.ParseExpression(statement[(assignmentIndex + 1)..]))
-            : new JsExpressionStatement(SimpleJsParser.ParseExpression(statement));
+        var assignment = SimpleJsParser.FindTopLevelAssignment(statement);
+        if (assignment.Success)
+        {
+            var target = SimpleJsParser.ParseExpression(statement[..assignment.Index]);
+            var value = SimpleJsParser.ParseExpression(statement[(assignment.Index + assignment.Operator.Length)..]);
+            return assignment.Operator == "="
+                ? new JsAssignmentStatement(target, value)
+                : new JsCompoundAssignmentStatement(target, assignment.Operator, value);
+        }
+
+        return new JsExpressionStatement(SimpleJsParser.ParseExpression(statement));
     }
 
     private string ReadUntilStatementEnd()
@@ -733,7 +761,17 @@ internal sealed class ExpressionParser
     private readonly List<Token> _tokens;
     private int _position;
     public ExpressionParser(string text) => _tokens = Tokenize(text).ToList();
-    public JsExpression Parse() { var expr = ParseBinary(0); Expect(TokenKind.End); return expr; }
+    public JsExpression Parse() { var expr = ParseConditional(); Expect(TokenKind.End); return expr; }
+
+    private JsExpression ParseConditional()
+    {
+        var test = ParseBinary(0);
+        if (!Match(TokenKind.Question)) return test;
+        var consequent = ParseConditional();
+        Expect(TokenKind.Colon);
+        var alternate = ParseConditional();
+        return new JsConditionalExpression(test, consequent, alternate);
+    }
 
     private JsExpression ParseBinary(int parentPrecedence)
     {
@@ -776,23 +814,43 @@ internal sealed class ExpressionParser
             TokenKind.Identifier when token.Text == "null" => new JsLiteralExpression(null),
             TokenKind.Identifier => new JsIdentifierExpression(token.Text),
             TokenKind.OpenParen => ParseParenthesized(),
+            TokenKind.OpenBracket => ParseArrayLiteral(),
             _ => throw new NotSupportedException($"Unexpected token '{token.Text}'.")
         };
     }
 
-    private JsExpression ParseParenthesized() { var expr = ParseBinary(0); Expect(TokenKind.CloseParen); return expr; }
+    private JsExpression ParseParenthesized() { var expr = ParseConditional(); Expect(TokenKind.CloseParen); return expr; }
+
+    private JsExpression ParseArrayLiteral()
+    {
+        var elements = new List<JsExpression>();
+        if (Match(TokenKind.CloseBracket)) return new JsArrayExpression(elements);
+        do
+        {
+            elements.Add(ParseConditional());
+        } while (Match(TokenKind.Comma) && Current.Kind != TokenKind.CloseBracket);
+        Expect(TokenKind.CloseBracket);
+        return new JsArrayExpression(elements);
+    }
 
     private JsExpression ParsePostfix(JsExpression expression)
     {
         while (true)
         {
             if (Match(TokenKind.Dot)) { expression = new JsMemberExpression(expression, Expect(TokenKind.Identifier).Text); continue; }
+            if (Match(TokenKind.OpenBracket))
+            {
+                var index = ParseConditional();
+                Expect(TokenKind.CloseBracket);
+                expression = new JsIndexExpression(expression, index);
+                continue;
+            }
             if (Match(TokenKind.OpenParen))
             {
                 var args = new List<JsExpression>();
                 if (!Match(TokenKind.CloseParen))
                 {
-                    do { args.Add(ParseBinary(0)); } while (Match(TokenKind.Comma));
+                    do { args.Add(ParseConditional()); } while (Match(TokenKind.Comma));
                     Expect(TokenKind.CloseParen);
                 }
                 expression = new JsCallExpression(expression, args);
@@ -845,11 +903,13 @@ internal sealed class ExpressionParser
             var three = i + 2 < text.Length ? text.Substring(i, 3) : string.Empty;
             if (three is "===" or "!==") { yield return new Token(TokenKind.Operator, three); i += 3; continue; }
             var two = i + 1 < text.Length ? text.Substring(i, 2) : string.Empty;
-            if (two is "++" or "--" or "==" or "!=" or "<=" or ">=" or "&&" or "||") { yield return new Token(TokenKind.Operator, two); i += 2; continue; }
+            if (two is "++" or "--" or "+=" or "-=" or "*=" or "/=" or "%=" or "==" or "!=" or "<=" or ">=" or "&&" or "||") { yield return new Token(TokenKind.Operator, two); i += 2; continue; }
             yield return c switch
             {
                 '+' or '-' or '*' or '/' or '%' or '<' or '>' or '!' => new Token(TokenKind.Operator, c.ToString(CultureInfo.InvariantCulture)),
-                '.' => new Token(TokenKind.Dot, "."), '(' => new Token(TokenKind.OpenParen, "("), ')' => new Token(TokenKind.CloseParen, ")"), ',' => new Token(TokenKind.Comma, ","),
+                '.' => new Token(TokenKind.Dot, "."), '(' => new Token(TokenKind.OpenParen, "("), ')' => new Token(TokenKind.CloseParen, ")"),
+                '[' => new Token(TokenKind.OpenBracket, "["), ']' => new Token(TokenKind.CloseBracket, "]"),
+                '?' => new Token(TokenKind.Question, "?"), ':' => new Token(TokenKind.Colon, ":"), ',' => new Token(TokenKind.Comma, ","),
                 _ => throw new NotSupportedException($"Unsupported character '{c}'.")
             };
             i++;
@@ -857,7 +917,7 @@ internal sealed class ExpressionParser
         yield return new Token(TokenKind.End, string.Empty);
     }
 
-    private enum TokenKind { Identifier, Number, String, Operator, Dot, OpenParen, CloseParen, Comma, End }
+    private enum TokenKind { Identifier, Number, String, Operator, Dot, OpenParen, CloseParen, OpenBracket, CloseBracket, Question, Colon, Comma, End }
     private sealed record Token(TokenKind Kind, string Text)
     {
         public int UnaryPrecedence => Kind == TokenKind.Operator && Text is "+" or "-" or "!" ? 7 : 0;
@@ -870,6 +930,8 @@ public sealed class ExpressionTreeBackend
     private readonly IReadOnlyDictionary<string, object?> _globals;
     private readonly Dictionary<string, Expression> _symbols = new(StringComparer.Ordinal);
     private readonly List<ParameterExpression> _locals = new();
+    private readonly Stack<LabelTarget> _breakTargets = new();
+    private readonly Stack<LabelTarget> _continueTargets = new();
     public ExpressionTreeBackend(IReadOnlyDictionary<string, object?> globals) => _globals = globals;
 
     public Delegate Compile(JsFunctionDeclaration fn)
@@ -897,13 +959,16 @@ public sealed class ExpressionTreeBackend
     private Expression CompileStatement(JsStatement statement, LabelTarget returnTarget) => statement switch
     {
         JsBlockStatement block => Expression.Block(block.Statements.Select(x => CompileStatement(x, returnTarget))),
-        JsVariableStatement variable => CompileVariable(variable),
+        JsVariableStatement variable => AsVoid(CompileVariable(variable)),
         JsReturnStatement ret => Expression.Return(returnTarget, ret.Value is null ? Default(returnTarget.Type) : ConvertTo(CompileExpression(ret.Value), returnTarget.Type)),
-        JsExpressionStatement expr => CompileExpression(expr.Expression),
-        JsAssignmentStatement assignment => CompileAssignment(assignment),
+        JsExpressionStatement expr => AsVoid(CompileExpression(expr.Expression)),
+        JsAssignmentStatement assignment => AsVoid(CompileAssignment(assignment)),
+        JsCompoundAssignmentStatement assignment => AsVoid(CompileCompoundAssignment(assignment)),
         JsIfStatement ifStatement => CompileIf(ifStatement, returnTarget),
         JsWhileStatement whileStatement => CompileWhile(whileStatement, returnTarget),
         JsForStatement forStatement => CompileFor(forStatement, returnTarget),
+        JsBreakStatement => _breakTargets.Count == 0 ? throw new NotSupportedException("break can only be used inside a loop.") : Expression.Break(_breakTargets.Peek()),
+        JsContinueStatement => _continueTargets.Count == 0 ? throw new NotSupportedException("continue can only be used inside a loop.") : Expression.Continue(_continueTargets.Peek()),
         _ => throw new NotSupportedException($"Unsupported statement '{statement.GetType().Name}'.")
     };
 
@@ -922,6 +987,15 @@ public sealed class ExpressionTreeBackend
         return Expression.Assign(target, ConvertTo(CompileExpression(assignment.Value), target.Type));
     }
 
+    private Expression CompileCompoundAssignment(JsCompoundAssignmentStatement assignment)
+    {
+        var target = CompileAssignable(assignment.Target);
+        var value = CompileExpression(assignment.Value);
+        var op = assignment.Operator[..^1];
+        var computed = CompileBinaryExpression(op, target, value);
+        return Expression.Assign(target, ConvertTo(computed, target.Type));
+    }
+
     private Expression CompileIf(JsIfStatement statement, LabelTarget returnTarget)
     {
         var test = ConvertTo(CompileExpression(statement.Test), typeof(bool));
@@ -933,30 +1007,53 @@ public sealed class ExpressionTreeBackend
     private Expression CompileWhile(JsWhileStatement statement, LabelTarget returnTarget)
     {
         var breakTarget = Expression.Label("while_break");
-        return Expression.Loop(
-            Expression.IfThenElse(
-                ConvertTo(CompileExpression(statement.Test), typeof(bool)),
-                CompileStatement(statement.Body, returnTarget),
-                Expression.Break(breakTarget)),
-            breakTarget);
+        var continueTarget = Expression.Label("while_continue");
+        _breakTargets.Push(breakTarget);
+        _continueTargets.Push(continueTarget);
+        try
+        {
+            return Expression.Loop(
+                Expression.Block(
+                    Expression.IfThen(Expression.Not(ConvertTo(CompileExpression(statement.Test), typeof(bool))), Expression.Break(breakTarget)),
+                    CompileStatement(statement.Body, returnTarget),
+                    Expression.Label(continueTarget)),
+                breakTarget);
+        }
+        finally
+        {
+            _continueTargets.Pop();
+            _breakTargets.Pop();
+        }
     }
 
     private Expression CompileFor(JsForStatement statement, LabelTarget returnTarget)
     {
         var breakTarget = Expression.Label("for_break");
+        var continueTarget = Expression.Label("for_continue");
         var expressions = new List<Expression>();
         if (statement.Init is not null) expressions.Add(CompileStatement(statement.Init, returnTarget));
 
-        var loopExpressions = new List<Expression>();
-        if (statement.Test is not null)
+        _breakTargets.Push(breakTarget);
+        _continueTargets.Push(continueTarget);
+        try
         {
-            loopExpressions.Add(Expression.IfThen(Expression.Not(ConvertTo(CompileExpression(statement.Test), typeof(bool))), Expression.Break(breakTarget)));
-        }
+            var loopExpressions = new List<Expression>();
+            if (statement.Test is not null)
+            {
+                loopExpressions.Add(Expression.IfThen(Expression.Not(ConvertTo(CompileExpression(statement.Test), typeof(bool))), Expression.Break(breakTarget)));
+            }
 
-        loopExpressions.Add(CompileStatement(statement.Body, returnTarget));
-        if (statement.Update is not null) loopExpressions.Add(CompileStatement(statement.Update, returnTarget));
-        expressions.Add(Expression.Loop(Expression.Block(loopExpressions), breakTarget));
-        return Expression.Block(expressions);
+            loopExpressions.Add(CompileStatement(statement.Body, returnTarget));
+            loopExpressions.Add(Expression.Label(continueTarget));
+            if (statement.Update is not null) loopExpressions.Add(CompileStatement(statement.Update, returnTarget));
+            expressions.Add(Expression.Loop(Expression.Block(loopExpressions), breakTarget));
+            return Expression.Block(expressions);
+        }
+        finally
+        {
+            _continueTargets.Pop();
+            _breakTargets.Pop();
+        }
     }
 
     private Expression CompileExpression(JsExpression expression) => expression switch
@@ -964,10 +1061,13 @@ public sealed class ExpressionTreeBackend
         JsLiteralExpression literal => CompileLiteral(literal.Value),
         JsIdentifierExpression identifier => _symbols.TryGetValue(identifier.Name, out var symbol) ? symbol : throw new NotSupportedException($"Unknown identifier '{identifier.Name}'."),
         JsMemberExpression member => CompileMember(member),
+        JsIndexExpression index => CompileIndex(index),
         JsCallExpression call => CompileCall(call),
         JsBinaryExpression binary => CompileBinary(binary),
         JsUnaryExpression unary => CompileUnary(unary),
         JsUpdateExpression update => CompileUpdate(update),
+        JsArrayExpression array => CompileArray(array),
+        JsConditionalExpression conditional => CompileConditional(conditional),
         _ => throw new NotSupportedException($"Unsupported expression '{expression.GetType().Name}'.")
     };
 
@@ -978,6 +1078,7 @@ public sealed class ExpressionTreeBackend
     {
         JsIdentifierExpression id when _symbols.TryGetValue(id.Name, out var symbol) => symbol,
         JsMemberExpression member => CompileMember(member),
+        JsIndexExpression index => CompileIndex(index),
         _ => throw new NotSupportedException("Unsupported assignment target.")
     };
 
@@ -989,6 +1090,42 @@ public sealed class ExpressionTreeBackend
         var method = ResolveMethod(instance.Type, member.Member, args.Select(x => x.Type).ToArray());
         var converted = method.GetParameters().Select((p, i) => ConvertTo(args[i], p.ParameterType));
         return Expression.Call(instance, method, converted);
+    }
+
+    private Expression CompileArray(JsArrayExpression array)
+    {
+        var elements = array.Elements.Select(CompileExpression).ToArray();
+        var elementType = InferArrayElementType(elements);
+        return Expression.NewArrayInit(elementType, elements.Select(x => ConvertTo(x, elementType)));
+    }
+
+    private Expression CompileIndex(JsIndexExpression index)
+    {
+        var target = CompileExpression(index.Target);
+        var indexExpression = CompileExpression(index.Index);
+        if (target.Type.IsArray)
+        {
+            return Expression.ArrayAccess(target, ConvertTo(indexExpression, typeof(int)));
+        }
+
+        var indexer = target.Type.GetProperties(BindingFlags.Instance | BindingFlags.Public)
+            .FirstOrDefault(x => x.GetIndexParameters().Length == 1 && CanConvert(indexExpression.Type, x.GetIndexParameters()[0].ParameterType));
+        if (indexer is not null)
+        {
+            var parameter = indexer.GetIndexParameters()[0];
+            return Expression.MakeIndex(target, indexer, new[] { ConvertTo(indexExpression, parameter.ParameterType) });
+        }
+
+        throw new NotSupportedException($"Index access is not supported for '{target.Type.Name}'.");
+    }
+
+    private Expression CompileConditional(JsConditionalExpression conditional)
+    {
+        var test = ConvertTo(CompileExpression(conditional.Test), typeof(bool));
+        var consequent = CompileExpression(conditional.Consequent);
+        var alternate = CompileExpression(conditional.Alternate);
+        var type = CommonType(consequent.Type, alternate.Type);
+        return Expression.Condition(test, ConvertTo(consequent, type), ConvertTo(alternate, type));
     }
 
     private static Expression BindMember(Expression target, string member)
@@ -1036,11 +1173,11 @@ public sealed class ExpressionTreeBackend
         };
     }
 
-    private Expression CompileBinary(JsBinaryExpression binary)
+    private Expression CompileBinary(JsBinaryExpression binary) => CompileBinaryExpression(binary.Operator, CompileExpression(binary.Left), CompileExpression(binary.Right));
+
+    private static Expression CompileBinaryExpression(string op, Expression left, Expression right)
     {
-        var left = CompileExpression(binary.Left);
-        var right = CompileExpression(binary.Right);
-        return binary.Operator switch
+        return op switch
         {
             "+" when left.Type == typeof(string) || right.Type == typeof(string) => Expression.Call(typeof(string).GetMethod(nameof(string.Concat), new[] { typeof(object), typeof(object) })!, Expression.Convert(left, typeof(object)), Expression.Convert(right, typeof(object))),
             "+" => Expression.Add(ConvertTo(left, typeof(double)), ConvertTo(right, typeof(double))),
@@ -1052,17 +1189,40 @@ public sealed class ExpressionTreeBackend
             "<=" => Expression.LessThanOrEqual(ConvertTo(left, typeof(double)), ConvertTo(right, typeof(double))),
             ">" => Expression.GreaterThan(ConvertTo(left, typeof(double)), ConvertTo(right, typeof(double))),
             ">=" => Expression.GreaterThanOrEqual(ConvertTo(left, typeof(double)), ConvertTo(right, typeof(double))),
-            "==" or "===" => Expression.Equal(ConvertTo(left, right.Type), right),
-            "!=" or "!==" => Expression.NotEqual(ConvertTo(left, right.Type), right),
+            "==" or "===" => Expression.Equal(ConvertComparable(left, right), ConvertComparable(right, left)),
+            "!=" or "!==" => Expression.NotEqual(ConvertComparable(left, right), ConvertComparable(right, left)),
             "&&" => Expression.AndAlso(ConvertTo(left, typeof(bool)), ConvertTo(right, typeof(bool))),
             "||" => Expression.OrElse(ConvertTo(left, typeof(bool)), ConvertTo(right, typeof(bool))),
-            _ => throw new NotSupportedException($"Operator '{binary.Operator}' is not supported.")
+            _ => throw new NotSupportedException($"Operator '{op}' is not supported.")
         };
+    }
+
+    private static Expression ConvertComparable(Expression expression, Expression other)
+    {
+        if (expression.Type == other.Type) return expression;
+        if (expression.Type == typeof(object)) return expression;
+        if (other.Type == typeof(object)) return ConvertTo(expression, typeof(object));
+        return ConvertTo(expression, other.Type);
+    }
+
+    private static Type InferArrayElementType(IReadOnlyList<Expression> elements)
+    {
+        if (elements.Count == 0) return typeof(object);
+        var first = elements[0].Type;
+        return elements.All(x => x.Type == first) ? first : typeof(object);
+    }
+
+    private static Type CommonType(Type left, Type right)
+    {
+        if (left == right) return left;
+        if (left == typeof(double) && right == typeof(int) || left == typeof(int) && right == typeof(double)) return typeof(double);
+        return typeof(object);
     }
 
     private static bool CanConvert(Type source, Type target) => target.IsAssignableFrom(source) || source == typeof(double) && target == typeof(int) || source == typeof(int) && target == typeof(double) || target == typeof(object);
     private static Expression ConvertTo(Expression expression, Type targetType) => expression.Type == targetType ? expression : Expression.Convert(expression, targetType);
     private static Expression Default(Type type) => type == typeof(void) ? Expression.Empty() : Expression.Default(type);
+    private static Expression AsVoid(Expression expression) => expression.Type == typeof(void) ? expression : Expression.Block(expression, Expression.Empty());
 }
 
 public static class TypedJintTranspiler
@@ -1135,6 +1295,9 @@ public static class TypedJintTranspiler
             case JsAssignmentStatement assignment:
                 builder.Append(pad).Append(EmitExpression(assignment.Target)).Append(" = ").Append(EmitExpression(assignment.Value)).AppendLine(";");
                 break;
+            case JsCompoundAssignmentStatement assignment:
+                builder.Append(pad).Append(EmitExpression(assignment.Target)).Append(' ').Append(assignment.Operator).Append(' ').Append(EmitExpression(assignment.Value)).AppendLine(";");
+                break;
             case JsIfStatement ifStatement:
                 builder.Append(pad).Append("if (").Append(EmitExpression(ifStatement.Test)).AppendLine(")");
                 EmitEmbeddedStatement(builder, ifStatement.Consequent, indent);
@@ -1151,6 +1314,12 @@ public static class TypedJintTranspiler
             case JsForStatement forStatement:
                 builder.Append(pad).Append("for (").Append(EmitForPart(forStatement.Init)).Append("; ").Append(forStatement.Test is null ? string.Empty : EmitExpression(forStatement.Test)).Append("; ").Append(EmitForPart(forStatement.Update)).AppendLine(")");
                 EmitEmbeddedStatement(builder, forStatement.Body, indent);
+                break;
+            case JsBreakStatement:
+                builder.Append(pad).AppendLine("break;");
+                break;
+            case JsContinueStatement:
+                builder.Append(pad).AppendLine("continue;");
                 break;
             default:
                 builder.Append(pad).Append("// unsupported: ").AppendLine(statement.GetType().Name);
@@ -1178,6 +1347,7 @@ public static class TypedJintTranspiler
             null => string.Empty,
             JsVariableStatement variable => "var " + SanitizeIdentifier(variable.Name) + " = " + EmitExpression(variable.Initializer),
             JsAssignmentStatement assignment => EmitExpression(assignment.Target) + " = " + EmitExpression(assignment.Value),
+            JsCompoundAssignmentStatement assignment => EmitExpression(assignment.Target) + " " + assignment.Operator + " " + EmitExpression(assignment.Value),
             JsExpressionStatement expression => EmitExpression(expression.Expression),
             _ => statement.GetType().Name
         };
@@ -1194,10 +1364,13 @@ public static class TypedJintTranspiler
             JsLiteralExpression literal => Convert.ToString(literal.Value, CultureInfo.InvariantCulture) ?? string.Empty,
             JsIdentifierExpression identifier => SanitizeIdentifier(identifier.Name),
             JsMemberExpression member => EmitExpression(member.Target) + "." + member.Member,
+            JsIndexExpression index => EmitExpression(index.Target) + "[" + EmitExpression(index.Index) + "]",
             JsCallExpression call => EmitExpression(call.Target) + "(" + string.Join(", ", call.Arguments.Select(EmitExpression)) + ")",
             JsBinaryExpression binary => "(" + EmitExpression(binary.Left) + " " + MapOperator(binary.Operator) + " " + EmitExpression(binary.Right) + ")",
             JsUnaryExpression unary => "(" + unary.Operator + EmitExpression(unary.Operand) + ")",
             JsUpdateExpression update => update.Prefix ? update.Operator + EmitExpression(update.Target) : EmitExpression(update.Target) + update.Operator,
+            JsArrayExpression array => "new[] { " + string.Join(", ", array.Elements.Select(EmitExpression)) + " }",
+            JsConditionalExpression conditional => "(" + EmitExpression(conditional.Test) + " ? " + EmitExpression(conditional.Consequent) + " : " + EmitExpression(conditional.Alternate) + ")",
             _ => expression.GetType().Name
         };
     }
