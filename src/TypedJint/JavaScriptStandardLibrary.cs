@@ -95,7 +95,10 @@ public sealed class JavaScriptConsole
 
     public void write(object? value) => Console.Write(Format(value));
     public void writeLine(object? value) => Console.WriteLine(Format(value));
-    public void clear() => Console.Clear();
+    public void clear()
+    {
+        // Portable no-op: browser console.clear() is advisory, while Console.Clear can fail on redirected/non-interactive hosts.
+    }
 
     private static string Join(params object?[] values) => string.Join(" ", values.Select(Format));
     private static string Format(object? value) => value?.ToString() ?? "null";
