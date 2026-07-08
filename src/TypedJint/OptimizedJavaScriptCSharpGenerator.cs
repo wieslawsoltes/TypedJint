@@ -54,7 +54,7 @@ public static class OptimizedJavaScriptCSharpGenerator
             builder.AppendLine();
             builder.Append("    public ").Append(SanitizeIdentifier(options.ClassName)).AppendLine("()");
             builder.AppendLine("    {");
-            builder.AppendLine("        _runtime = new JavaScriptRuntimeEngine();");
+            builder.AppendLine("        _runtime = new JavaScriptRuntimeEngine().RegisterStandardLibrary();");
             builder.AppendLine("        _runtime.Execute(Source);");
             builder.AppendLine("    }");
             builder.AppendLine();
