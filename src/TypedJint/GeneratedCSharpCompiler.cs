@@ -25,19 +25,25 @@ public sealed record GeneratedCSharpDiagnostic(
     }
 }
 
-public sealed class GeneratedCSharpBuildResult
+public sealed class GeneratedCSharpBuildResult : IDisposable
 {
     public required string Source { get; init; }
     public required bool Success { get; init; }
     public required IReadOnlyList<GeneratedCSharpDiagnostic> Diagnostics { get; init; }
     public Assembly? Assembly { get; init; }
+    public AssemblyLoadContext? LoadContext { get; init; }
 
     public string DiagnosticsText => Diagnostics.Count == 0
         ? "No diagnostics."
         : string.Join(Environment.NewLine, Diagnostics.Select(x => x.ToString()));
+
+    public void Dispose()
+    {
+        LoadContext?.Unload();
+    }
 }
 
-public sealed class GeneratedCSharpExecutionResult
+public sealed class GeneratedCSharpExecutionResult : IDisposable
 {
     public required GeneratedCSharpBuildResult Build { get; init; }
     public object? ReturnValue { get; init; }
@@ -45,6 +51,11 @@ public sealed class GeneratedCSharpExecutionResult
     public Exception? Exception { get; init; }
 
     public bool Success => Build.Success && Exception is null;
+
+    public void Dispose()
+    {
+        Build.Dispose();
+    }
 }
 
 public sealed class GeneratedCSharpScriptInstance
@@ -194,8 +205,9 @@ public static class GeneratedCSharpCompiler
             .WithNullableContextOptions(NullableContextOptions.Enable)
             .WithAllowUnsafe(options.AllowUnsafe);
 
+        var assemblyName = options.AssemblyName + "." + Guid.NewGuid().ToString("N");
         var compilation = CSharpCompilation.Create(
-            options.AssemblyName + "." + Guid.NewGuid().ToString("N"),
+            assemblyName,
             [syntaxTree],
             CreateReferences(),
             compilationOptions);
@@ -218,13 +230,15 @@ public static class GeneratedCSharpCompiler
         }
 
         pe.Position = 0;
-        var assembly = AssemblyLoadContext.Default.LoadFromStream(pe);
+        var loadContext = new GeneratedCSharpAssemblyLoadContext(assemblyName);
+        var assembly = loadContext.LoadFromStream(pe);
         return new GeneratedCSharpBuildResult
         {
             Source = source,
             Success = true,
             Diagnostics = diagnostics,
-            Assembly = assembly
+            Assembly = assembly,
+            LoadContext = loadContext
         };
     }
 
@@ -282,5 +296,19 @@ public static class GeneratedCSharpCompiler
         task.GetAwaiter().GetResult();
         var type = task.GetType();
         return type.IsGenericType ? type.GetProperty("Result")?.GetValue(task) : null;
+    }
+
+    private sealed class GeneratedCSharpAssemblyLoadContext : AssemblyLoadContext
+    {
+        public GeneratedCSharpAssemblyLoadContext(string name)
+            : base(name, isCollectible: true)
+        {
+        }
+
+        protected override Assembly? Load(AssemblyName assemblyName)
+        {
+            return Default.Assemblies.FirstOrDefault(
+                assembly => AssemblyName.ReferenceMatchesDefinition(assembly.GetName(), assemblyName));
+        }
     }
 }
