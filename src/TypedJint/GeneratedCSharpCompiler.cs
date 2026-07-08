@@ -8,8 +8,10 @@ namespace TypedJint;
 public sealed record GeneratedCSharpCompilerOptions(
     string AssemblyName = "TypedJint.GeneratedScript",
     bool Optimize = true,
-    bool AllowUnsafe = false,
-    LanguageVersion LanguageVersion = LanguageVersion.Preview);
+    bool AllowUnsafe = false)
+{
+    public Microsoft.CodeAnalysis.CSharp.LanguageVersion CSharpLanguageVersion { get; init; } = Microsoft.CodeAnalysis.CSharp.LanguageVersion.Preview;
+}
 
 public sealed record GeneratedCSharpDiagnostic(
     string Id,
@@ -99,14 +101,14 @@ public static class GeneratedCSharpCompiler
         string source,
         GeneratedCSharpCompilerOptions? options = null)
     {
-        return Build(source, OutputKind.DynamicallyLinkedLibrary, options);
+        return BuildCore(source, OutputKind.DynamicallyLinkedLibrary, options);
     }
 
     public static GeneratedCSharpExecutionResult RunTopLevelProgram(
         string source,
         GeneratedCSharpCompilerOptions? options = null)
     {
-        var build = Build(source, OutputKind.ConsoleApplication, options);
+        var build = BuildCore(source, OutputKind.ConsoleApplication, options);
         if (!build.Success || build.Assembly is null)
         {
             return new GeneratedCSharpExecutionResult { Build = build };
@@ -187,7 +189,7 @@ public static class GeneratedCSharpCompiler
         }
     }
 
-    public static GeneratedCSharpBuildResult Build(
+    private static GeneratedCSharpBuildResult BuildCore(
         string source,
         OutputKind outputKind,
         GeneratedCSharpCompilerOptions? options = null)
@@ -196,7 +198,7 @@ public static class GeneratedCSharpCompiler
         options ??= new GeneratedCSharpCompilerOptions();
 
         var parseOptions = CSharpParseOptions.Default
-            .WithLanguageVersion(options.LanguageVersion)
+            .WithLanguageVersion(options.CSharpLanguageVersion)
             .WithDocumentationMode(DocumentationMode.None);
         var syntaxTree = CSharpSyntaxTree.ParseText(source, parseOptions);
 
@@ -208,14 +210,14 @@ public static class GeneratedCSharpCompiler
         var assemblyName = options.AssemblyName + "." + Guid.NewGuid().ToString("N");
         var compilation = CSharpCompilation.Create(
             assemblyName,
-            [syntaxTree],
+            new[] { syntaxTree },
             CreateReferences(),
             compilationOptions);
 
         using var pe = new MemoryStream();
         var emit = compilation.Emit(pe);
         var diagnostics = emit.Diagnostics
-            .Where(x => x.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning)
+            .Where(x => x.Severity == DiagnosticSeverity.Error || x.Severity == DiagnosticSeverity.Warning)
             .Select(ToDiagnostic)
             .ToArray();
 
