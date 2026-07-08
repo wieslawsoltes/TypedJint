@@ -52,6 +52,112 @@ public sealed class StandardLibraryCompilerTests
     }
 
     [Fact]
+    public void CompilesConsoleLogThroughTypedStandardLibrary()
+    {
+        var previousOut = Console.Out;
+        using var writer = new StringWriter();
+        Console.SetOut(writer);
+
+        try
+        {
+            var engine = new TypedJintEngine().RegisterStandardLibrary();
+
+            var verified = engine.ExecuteVerified(
+                """
+                /**
+                 * @param {number} value
+                 * @returns {number}
+                 */
+                function printAndReturn(value) {
+                    console.log("value", value);
+                    return value;
+                }
+                """,
+                new Dictionary<string, object?[][]>
+                {
+                    ["printAndReturn"] =
+                    [
+                        [42.0]
+                    ]
+                });
+
+            Assert.True(verified.Verified, verified.CompilerOutputs["printAndReturn"].ToMarkdown());
+            Assert.Equal(42.0, Convert.ToDouble(engine.Invoke("printAndReturn", 42.0)));
+            Assert.Contains("value 42", writer.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Console.SetOut(previousOut);
+        }
+    }
+
+    [Fact]
+    public void CompilesNetworkDataUriThroughTypedStandardLibrary()
+    {
+        var engine = new TypedJintEngine().RegisterStandardLibrary();
+
+        var verified = engine.ExecuteVerified(
+            """
+            /**
+             * @returns {string}
+             */
+            function loadText() {
+                return net.getString("data:text/plain,hello%20typedjint");
+            }
+            """);
+
+        Assert.True(verified.Verified, verified.CompilerOutputs["loadText"].ToMarkdown());
+        Assert.Equal("hello typedjint", engine.Invoke("loadText"));
+    }
+
+    [Fact]
+    public void CompilesEncodingThroughTypedStandardLibrary()
+    {
+        var engine = new TypedJintEngine().RegisterStandardLibrary();
+
+        var verified = engine.ExecuteVerified(
+            """
+            /**
+             * @returns {string}
+             */
+            function encodeText() {
+                return encoding.base64Decode(encoding.base64Encode("typed"));
+            }
+            """);
+
+        Assert.True(verified.Verified, verified.CompilerOutputs["encodeText"].ToMarkdown());
+        Assert.Equal("typed", engine.Invoke("encodeText"));
+    }
+
+    [Fact]
+    public void RuntimeEngineCanUseStandardLibraryConsoleAndNetwork()
+    {
+        var previousOut = Console.Out;
+        using var writer = new StringWriter();
+        Console.SetOut(writer);
+
+        try
+        {
+            var engine = new JavaScriptRuntimeEngine().RegisterStandardLibrary();
+            engine.Execute(
+                """
+                function run() {
+                    const text = net.getString("data:text/plain,runtime");
+                    console.log(text);
+                    return text;
+                }
+                """);
+
+            Assert.Equal("runtime", engine.Invoke("run"));
+            Assert.Contains("runtime", writer.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Console.SetOut(previousOut);
+        }
+    }
+
+    [Fact]
     public void CompilesArrayAndStringLength()
     {
         var engine = new TypedJintEngine();
@@ -89,8 +195,28 @@ public sealed class StandardLibraryCompilerTests
 
         Assert.Contains("Math.Sqrt(value)", csharp, StringComparison.Ordinal);
         Assert.Contains("values.Length", csharp, StringComparison.Ordinal);
+        Assert.Contains("using System;", csharp, StringComparison.Ordinal);
         Assert.DoesNotContain("Math.sqrt", csharp, StringComparison.Ordinal);
         Assert.DoesNotContain(".length", csharp, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RewritesStandardLibraryCallsInGeneratedCSharp()
+    {
+        var csharp = JavaScriptCSharpGenerator.GenerateStaticClass(
+            """
+            /**
+             * @returns {string}
+             */
+            function rewriteStdlib() {
+                console.log("hello");
+                return encoding.base64Decode(net.getString("data:text/plain,dHlwZWQ="));
+            }
+            """);
+
+        Assert.Contains("Console.WriteLine(\"hello\")", csharp, StringComparison.Ordinal);
+        Assert.Contains("JavaScriptNetwork.Instance.getString", csharp, StringComparison.Ordinal);
+        Assert.Contains("JavaScriptEncoding.Instance.base64Decode", csharp, StringComparison.Ordinal);
     }
 
     [Fact]
