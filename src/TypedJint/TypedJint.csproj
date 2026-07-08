@@ -5,6 +5,8 @@
     <Description>Typed acceleration layer for Jint with a pure .NET DOM and host interop runtime.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/wieslawsoltes/TypedJint</RepositoryUrl>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <NoWarn>$(NoWarn);NU1901;NU1902;NU1903;NU1904</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Jint" Version="4.10.1" />
