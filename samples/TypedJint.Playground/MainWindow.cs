@@ -50,7 +50,7 @@ public sealed class MainWindow : Window
 
         var title = new TextBlock
         {
-            Text = "TypedJint JS → verified delegate + C# preview playground",
+            Text = "TypedJint JS → native C# where safe + runtime fallback where needed",
             FontWeight = FontWeight.SemiBold,
             VerticalAlignment = VerticalAlignment.Center
         };
@@ -74,7 +74,7 @@ public sealed class MainWindow : Window
         outputGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
         AddOutputPanel(outputGrid, "Generated C# preview", _csharp, 0);
-        AddOutputPanel(outputGrid, "Normalized IR", _ir, 1);
+        AddOutputPanel(outputGrid, "Normalized native IR", _ir, 1);
         AddOutputPanel(outputGrid, "Diagnostics", _diagnostics, 2);
         AddOutputPanel(outputGrid, "Execution result", _result, 3);
 
@@ -87,61 +87,119 @@ public sealed class MainWindow : Window
 
     private void RunScript()
     {
+        var source = _source.Text ?? string.Empty;
+        var diagnostics = new StringBuilder();
+
         try
         {
-            var source = _source.Text ?? string.Empty;
-            var engine = new TypedJintEngine();
-            var runtimeCases = CreateRuntimeCases(source);
-            var verified = engine.ExecuteVerified(source, runtimeCases);
+            var generated = OptimizedJavaScriptCSharpGenerator.Generate(source);
+            _csharp.Text = generated.Source;
 
-            _csharp.Text = TypedJintTranspiler.TranspileToCSharp(source);
-            _ir.Text = string.Join(Environment.NewLine + Environment.NewLine, verified.CompilerOutputs.Values.Select(x => x.NormalizedIr));
-            _diagnostics.Text = FormatDiagnostics(verified);
-            _result.Text = FormatExecutionResult(engine, verified);
+            diagnostics.AppendLine("Generated C# mode: optimized hybrid");
+            diagnostics.Append("native functions: ").AppendLine(FormatList(generated.NativeFunctions));
+            diagnostics.Append("runtime functions: ").AppendLine(FormatList(generated.RuntimeFunctions));
+            diagnostics.AppendLine();
+
+            foreach (var diagnostic in generated.Diagnostics)
+            {
+                diagnostics.Append(diagnostic.Code)
+                    .Append(' ')
+                    .Append(diagnostic.Severity)
+                    .Append(": ")
+                    .AppendLine(diagnostic.Message);
+            }
+
+            diagnostics.AppendLine();
+
+            var verified = TryExecuteVerified(source, diagnostics);
+            if (verified is not null)
+            {
+                _ir.Text = string.Join(Environment.NewLine + Environment.NewLine, verified.CompilerOutputs.Values.Select(x => x.NormalizedIr));
+                var typedEngine = new TypedJintEngine();
+                typedEngine.Execute(source);
+                _result.Text = FormatExecutionResult(typedEngine, verified);
+                diagnostics.AppendLine(FormatDiagnostics(verified));
+            }
+            else
+            {
+                _ir.Text = generated.NativeFunctions.Count == 0
+                    ? "No native typed IR was generated. The source is still represented by runtime-compatible generated C#."
+                    : "Native methods were generated. Verified IR is unavailable because the whole script contains dynamic JavaScript.";
+
+                _result.Text = ExecuteWithRuntime(source, generated);
+            }
+
+            _diagnostics.Text = diagnostics.ToString();
         }
         catch (Exception ex)
         {
-            _diagnostics.Text = ex.ToString();
+            _csharp.Text = JavaScriptCSharpGenerator.GenerateRuntimeTopLevelStatements(source);
+            _ir.Text = "No native typed IR was generated.";
+            _diagnostics.Text = diagnostics.AppendLine().AppendLine("Runtime execution failed:").AppendLine(ex.Message).ToString();
             _result.Text = "Execution failed.";
+        }
+    }
+
+    private static VerifiedTypedCompilationResult? TryExecuteVerified(string source, StringBuilder diagnostics)
+    {
+        try
+        {
+            var engine = new TypedJintEngine();
+            return engine.ExecuteVerified(source, CreateRuntimeCases(source));
+        }
+        catch (Exception ex)
+        {
+            diagnostics.AppendLine("Typed native verification skipped for complete script.");
+            diagnostics.AppendLine(ex.GetType().Name + ": " + ex.Message);
+            diagnostics.AppendLine("The playground will execute through JavaScriptRuntimeEngine instead of failing.");
+            diagnostics.AppendLine();
+            return null;
         }
     }
 
     private static Dictionary<string, object?[][]> CreateRuntimeCases(string source)
     {
-        var names = SimpleJsParser.ParseFunctions(source).Select(x => x.Name).ToHashSet(StringComparer.Ordinal);
-        var cases = new Dictionary<string, object?[][]>(StringComparer.Ordinal);
-
-        if (names.Contains("sumEven"))
+        try
         {
-            cases["sumEven"] = new[]
-            {
-                new object?[] { 0.0 },
-                new object?[] { 6.0 },
-                new object?[] { 10.0 }
-            };
-        }
+            var names = SimpleJsParser.ParseFunctions(source).Select(x => x.Name).ToHashSet(StringComparer.Ordinal);
+            var cases = new Dictionary<string, object?[][]>(StringComparer.Ordinal);
 
-        if (names.Contains("factorial"))
+            if (names.Contains("sumEven"))
+            {
+                cases["sumEven"] = new[]
+                {
+                    new object?[] { 0.0 },
+                    new object?[] { 6.0 },
+                    new object?[] { 10.0 }
+                };
+            }
+
+            if (names.Contains("factorial"))
+            {
+                cases["factorial"] = new[]
+                {
+                    new object?[] { 1.0 },
+                    new object?[] { 3.0 },
+                    new object?[] { 5.0 }
+                };
+            }
+
+            if (names.Contains("abs"))
+            {
+                cases["abs"] = new[]
+                {
+                    new object?[] { -10.0 },
+                    new object?[] { 0.0 },
+                    new object?[] { 42.0 }
+                };
+            }
+
+            return cases;
+        }
+        catch
         {
-            cases["factorial"] = new[]
-            {
-                new object?[] { 1.0 },
-                new object?[] { 3.0 },
-                new object?[] { 5.0 }
-            };
+            return new Dictionary<string, object?[][]>(StringComparer.Ordinal);
         }
-
-        if (names.Contains("abs"))
-        {
-            cases["abs"] = new[]
-            {
-                new object?[] { -10.0 },
-                new object?[] { 0.0 },
-                new object?[] { 42.0 }
-            };
-        }
-
-        return cases;
     }
 
     private static string FormatDiagnostics(VerifiedTypedCompilationResult verified)
@@ -169,6 +227,38 @@ public sealed class MainWindow : Window
         {
             builder.AppendLine();
             builder.AppendLine(output.ToMarkdown());
+        }
+
+        return builder.ToString();
+    }
+
+    private static string ExecuteWithRuntime(string source, OptimizedJavaScriptCSharpGenerationResult generated)
+    {
+        var runtime = new JavaScriptRuntimeEngine();
+        var result = runtime.Execute(source);
+        var builder = new StringBuilder();
+        builder.AppendLine("runtime execution: loaded");
+        builder.Append("runtime functions: ").AppendLine(FormatList(result.RuntimeFunctions.Keys));
+        builder.Append("class declarations: ").AppendLine(FormatList(result.ClassDeclarations));
+        builder.AppendLine();
+
+        foreach (var function in result.RuntimeFunctions.Keys.Take(8))
+        {
+            try
+            {
+                var value = runtime.Invoke(function);
+                builder.Append(function).Append("() = ").AppendLine(value?.ToString() ?? "null");
+            }
+            catch (Exception ex)
+            {
+                builder.Append(function).Append("() skipped: ").AppendLine(ex.Message);
+            }
+        }
+
+        if (generated.NativeFunctions.Count > 0)
+        {
+            builder.AppendLine();
+            builder.Append("native methods emitted in generated C#: ").AppendLine(FormatList(generated.NativeFunctions));
         }
 
         return builder.ToString();
@@ -208,6 +298,12 @@ public sealed class MainWindow : Window
         }
 
         return builder.ToString();
+    }
+
+    private static string FormatList(IEnumerable<string> values)
+    {
+        var array = values.ToArray();
+        return array.Length == 0 ? "(none)" : string.Join(", ", array);
     }
 
     private static TextBox CreateEditor(string text, bool readOnly)
@@ -262,44 +358,28 @@ function sumEven(limit) {
     return acc;
 }
 
-/**
- * @param {number} n
- * @returns {number}
- */
-function factorial(n) {
-    let acc = 1;
-    while (n > 1) {
-        acc = acc * n;
-        n = n - 1;
+function createCounter() {
+    let count = 0;
+
+    return function() {
+        count++;
+        return count;
+    };
+}
+
+class Counter {
+    constructor(value) {
+        this.value = value;
     }
 
-    return acc;
-}
-
-/**
- * @param {number} x
- * @returns {number}
- */
-function abs(x) {
-    if (x < 0) {
-        return -x;
+    next() {
+        return ++this.value;
     }
-
-    return x;
 }
 
-/**
- * @param {DomElement} button
- * @returns {void}
- */
-function setupButton(button) {
-    button.textContent = "Ready";
-    button.classList.add("primary");
-    button.style.backgroundColor = "red";
-}
-
-function dynamicFallback(a, b) {
-    return a + b;
+function runDynamic() {
+    const counter = new Counter(41);
+    return counter.next();
 }
 """;
 }
