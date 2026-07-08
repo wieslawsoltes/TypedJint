@@ -137,7 +137,12 @@ public static class OptimizedJavaScriptCSharpGenerator
         {
             var globals = new Dictionary<string, object?>(StringComparer.Ordinal)
             {
-                ["Math"] = JavaScriptMath.Instance
+                ["Math"] = JavaScriptMath.Instance,
+                ["console"] = JavaScriptConsole.Instance,
+                ["net"] = JavaScriptNetwork.Instance,
+                ["encoding"] = JavaScriptEncoding.Instance,
+                ["json"] = JavaScriptJson.Instance,
+                ["time"] = JavaScriptTime.Instance
             };
 
             var compileResult = new TypedJsCompiler(

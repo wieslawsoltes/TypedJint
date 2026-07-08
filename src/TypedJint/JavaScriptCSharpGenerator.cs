@@ -25,7 +25,7 @@ public static class JavaScriptCSharpGenerator
 
         return options.Mode switch
         {
-            JavaScriptCSharpGenerationMode.StaticClass => CSharpIntrinsicRewriter.Rewrite(TypedJintTranspiler.TranspileToCSharp(source, options.ClassName)),
+            JavaScriptCSharpGenerationMode.StaticClass => EnsureSystemUsing(CSharpIntrinsicRewriter.Rewrite(TypedJintTranspiler.TranspileToCSharp(source, options.ClassName))),
             JavaScriptCSharpGenerationMode.TopLevelStatements => GenerateTopLevelStatements(source, options),
             JavaScriptCSharpGenerationMode.RuntimeTopLevelStatements => GenerateRuntimeTopLevelStatements(source, options),
             _ => throw new ArgumentOutOfRangeException(nameof(options), options.Mode, null)
@@ -49,6 +49,8 @@ public static class JavaScriptCSharpGenerator
         {
             builder.AppendLine("#nullable enable");
         }
+
+        builder.AppendLine("using System;");
 
         if (options.IncludeTypedJintUsing)
         {
@@ -296,6 +298,16 @@ public static class JavaScriptCSharpGenerator
         "class" or "namespace" or "public" or "private" or "protected" or "internal" or "static" or "void" or "double" or "string" or "bool" or "object" or "return" => "@" + value,
         _ => value
     };
+
+    private static string EnsureSystemUsing(string source)
+    {
+        if (source.Contains("using System;", StringComparison.Ordinal))
+        {
+            return source;
+        }
+
+        return source.Replace("#nullable enable" + Environment.NewLine, "#nullable enable" + Environment.NewLine + "using System;" + Environment.NewLine, StringComparison.Ordinal);
+    }
 
     private static string Pad(int indent) => new(' ', indent * 4);
 }
