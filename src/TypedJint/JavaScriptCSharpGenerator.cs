@@ -89,7 +89,7 @@ public static class JavaScriptCSharpGenerator
 
         builder.AppendLine("using TypedJint;");
         builder.AppendLine();
-        builder.AppendLine("var engine = new JavaScriptRuntimeEngine();");
+        builder.AppendLine("var engine = new JavaScriptRuntimeEngine().RegisterStandardLibrary();");
         builder.Append("engine.Execute(").Append(ToRawStringLiteral(source)).AppendLine(");");
         return builder.ToString();
     }
