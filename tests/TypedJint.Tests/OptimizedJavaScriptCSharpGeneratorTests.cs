@@ -62,7 +62,7 @@ public sealed class OptimizedJavaScriptCSharpGeneratorTests
 
         Assert.Empty(result.NativeFunctions);
         Assert.Contains("dynamicObject", result.RuntimeFunctions);
-        Assert.Contains("Native C# generation was skipped", string.Join(Environment.NewLine, result.Diagnostics.Select(x => x.Message)), StringComparison.Ordinal);
+        Assert.Contains("Native C# generation skipped", string.Join(Environment.NewLine, result.Diagnostics.Select(x => x.Message)), StringComparison.Ordinal);
         Assert.Contains("_runtime.Execute(Source);", result.Source, StringComparison.Ordinal);
     }
 
