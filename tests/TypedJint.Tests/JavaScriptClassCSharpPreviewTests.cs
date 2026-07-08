@@ -21,6 +21,7 @@ public sealed class JavaScriptClassCSharpPreviewTests
 
             function runDynamic() {
                 const counter = new Counter(41);
+                for (let k in counter) {}
                 return counter.next();
             }
             """);
@@ -76,6 +77,7 @@ public sealed class JavaScriptClassCSharpPreviewTests
 
             function runDynamic() {
                 const counter = new Counter(41);
+                for (let k in counter) {}
                 return counter.next();
             }
             """);

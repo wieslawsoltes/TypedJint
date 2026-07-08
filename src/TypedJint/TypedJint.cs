@@ -437,7 +437,14 @@ public sealed class DomDocument : DomNode
 
     public DomElement documentElement { get; }
     public DomElement body { get; }
-    public DomElement createElement(string tagName) => new(tagName);
+    public DomElement createElement(string tagName)
+    {
+        if (string.Equals(tagName, "canvas", StringComparison.OrdinalIgnoreCase))
+        {
+            return new HTMLCanvasElement();
+        }
+        return new DomElement(tagName);
+    }
     public DomTextNode createTextNode(string text) => new(text);
     public DomElement? getElementById(string id) => DomElement.QuerySelectorAllCore(this, "#" + id).FirstOrDefault();
     public DomElement? querySelector(string selector) => DomElement.QuerySelectorAllCore(this, selector).FirstOrDefault();
@@ -464,6 +471,9 @@ public sealed record JsStaticType(JsStaticTypeKind Kind, Type ClrType)
         "Element" or "HTMLElement" or "HTMLButtonElement" or "DomElement" => Clr(typeof(DomElement)),
         "TextNode" or "DomTextNode" => Clr(typeof(DomTextNode)),
         "Event" or "DomEvent" => Clr(typeof(DomEvent)),
+        "HTMLCanvasElement" or "Canvas" => Clr(typeof(HTMLCanvasElement)),
+        "CanvasRenderingContext2D" => Clr(typeof(CanvasRenderingContext2D)),
+        "WebGLRenderingContext" => Clr(typeof(WebGLRenderingContext)),
         _ => Object
     };
 }
@@ -641,7 +651,7 @@ public sealed class TypedJsCompiler
                         ? Expression.GetActionType(paramTypes)
                         : Expression.GetFuncType(paramTypes.Append(fn.Annotation.ReturnType.ClrType).ToArray());
 
-                    var del = Delegate.CreateDelegate(delegateType, scriptInstance.Instance, methodInfo);
+                    var del = Delegate.CreateDelegate(delegateType, methodInfo.IsStatic ? null : scriptInstance.Instance, methodInfo);
                     _compiled[fn.Name] = new GeneratedScriptCompiledFunction(fn.Name, scriptInstance, methodInfo, isNative: true, del);
                     AddDiagnostic("TJ0400", TypedDiagnosticSeverity.Info, $"Compiled function '{fn.Name}' to C# native method.", fn.Span);
                 }
@@ -707,8 +717,9 @@ public static class SimpleJsParser
             walker.Visit(program);
             return walker.Functions;
         }
-        catch
+        catch (Exception ex)
         {
+            Console.Error.WriteLine($"[ParseFunctions ERROR] {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
             return Array.Empty<JsFunctionDeclaration>();
         }
     }
@@ -837,6 +848,12 @@ public static class SimpleJsParser
             Operator.MultiplicationAssignment => "*=",
             Operator.DivisionAssignment => "/=",
             Operator.RemainderAssignment => "%=",
+            Operator.BitwiseAndAssignment => "&=",
+            Operator.BitwiseOrAssignment => "|=",
+            Operator.BitwiseXorAssignment => "^=",
+            Operator.LeftShiftAssignment => "<<=",
+            Operator.RightShiftAssignment => ">>=",
+            Operator.UnsignedRightShiftAssignment => ">>>=",
             _ => throw new NotSupportedException($"Unsupported assignment operator: {op}")
         };
     }
@@ -861,6 +878,12 @@ public static class SimpleJsParser
             Operator.LogicalAnd => "&&",
             Operator.LogicalOr => "||",
             Operator.NullishCoalescing => "??",
+            Operator.BitwiseAnd => "&",
+            Operator.BitwiseOr => "|",
+            Operator.BitwiseXor => "^",
+            Operator.LeftShift => "<<",
+            Operator.RightShift => ">>",
+            Operator.UnsignedRightShift => ">>>",
             _ => throw new NotSupportedException($"Unsupported binary operator: {op}")
         };
     }
@@ -872,6 +895,7 @@ public static class SimpleJsParser
             Operator.UnaryPlus => "+",
             Operator.UnaryNegation => "-",
             Operator.LogicalNot => "!",
+            Operator.BitwiseNot => "~",
             _ => throw new NotSupportedException($"Unsupported unary operator: {op}")
         };
     }
@@ -1582,6 +1606,14 @@ public sealed class ExpressionTreeBackend
         if (call.Target is not JsMemberExpression member) throw new NotSupportedException("Only method calls are supported in phase one.");
         var instance = CompileExpression(member.Target);
         var args = call.Arguments.Select(CompileExpression).ToArray();
+        
+        if (instance.Type == typeof(object))
+        {
+            var invokeMethod = typeof(JavaScriptRuntimeEngine).GetMethod(nameof(JavaScriptRuntimeEngine.InvokeMethod))!;
+            var argsArrayExpr = Expression.NewArrayInit(typeof(object), args.Select(x => ConvertTo(x, typeof(object))));
+            return Expression.Call(invokeMethod, instance, Expression.Constant(member.Member), argsArrayExpr);
+        }
+
         var method = ResolveMethod(instance.Type, member.Member, args.Select(x => x.Type).ToArray());
         var converted = method.GetParameters().Select((p, i) => ConvertTo(args[i], p.ParameterType));
         return Expression.Call(instance, method, converted);
@@ -1754,6 +1786,8 @@ public static class TypedJintTranspiler
 {
     [ThreadStatic]
     private static HashSet<string>? _currentStaticVars;
+    [ThreadStatic]
+    private static HashSet<string>? _currentStaticParameters;
 
     private static HashSet<string> CollectStaticVariables(JsFunctionDeclaration function)
     {
@@ -1906,6 +1940,10 @@ public static class TypedJintTranspiler
                     set.Add(variable.Name);
                 }
             }
+            else if (variable.Initializer is JsArrayExpression)
+            {
+                set.Add(variable.Name);
+            }
         }
         else if (stmt is JsBlockStatement block)
         {
@@ -1935,7 +1973,7 @@ public static class TypedJintTranspiler
             JsUnaryExpression => true,
             JsUpdateExpression => true,
             JsBinaryExpression bin => bin.Operator != "||" && bin.Operator != "&&" && bin.Operator != "??" && IsStaticType(bin.Left) && IsStaticType(bin.Right),
-            JsIdentifierExpression id => _currentStaticVars?.Contains(id.Name) == true,
+            JsIdentifierExpression id => (_currentStaticVars?.Contains(id.Name) == true) || (_currentStaticParameters?.Contains(id.Name) == true),
             _ => false
         };
     }
@@ -1945,6 +1983,7 @@ public static class TypedJintTranspiler
         var builder = new StringBuilder();
         builder.AppendLine("// <auto-generated />");
         builder.AppendLine("#nullable enable");
+        builder.AppendLine("#nullable disable warnings");
         builder.AppendLine("using TypedJint;");
         builder.AppendLine();
         builder.Append("public static class ").Append(SanitizeIdentifier(className)).AppendLine();
@@ -1980,16 +2019,40 @@ public static class TypedJintTranspiler
         
         var prevStaticVars = _currentStaticVars;
         _currentStaticVars = CollectStaticVariables(function);
+        var prevStaticParams = _currentStaticParameters;
+        _currentStaticParameters = new HashSet<string>(StringComparer.Ordinal);
+        if (function.Annotation != null)
+        {
+            foreach (var kv in function.Annotation.Parameters)
+            {
+                if (kv.Value.Kind != JsStaticTypeKind.Object)
+                {
+                    _currentStaticParameters.Add(kv.Key);
+                }
+            }
+        }
         try
         {
             foreach (var statement in function.Body)
             {
                 EmitStatement(builder, statement, indent + 1);
             }
+            if (returnType != "void")
+            {
+                var defaultReturn = returnType switch
+                {
+                    "double" => "return 0.0;",
+                    "bool" => "return false;",
+                    "string" => "return \"\";",
+                    _ => "return null;"
+                };
+                builder.Append(Pad(indent + 1)).AppendLine(defaultReturn);
+            }
         }
         finally
         {
             _currentStaticVars = prevStaticVars;
+            _currentStaticParameters = prevStaticParams;
         }
         
         builder.Append(pad).AppendLine("}");
@@ -2141,7 +2204,9 @@ public static class TypedJintTranspiler
             JsLiteralExpression literal => Convert.ToString(literal.Value, CultureInfo.InvariantCulture) ?? string.Empty,
             JsIdentifierExpression identifier => SanitizeIdentifier(identifier.Name),
             JsMemberExpression member => EmitMemberExpression(member),
-            JsIndexExpression index => EmitExpression(index.Target) + "[" + EmitExpression(index.Index) + "]",
+            JsIndexExpression index => IsStaticType(index.Target)
+                ? EmitExpression(index.Target) + "[" + EmitExpression(index.Index) + "]"
+                : "JavaScriptRuntimeEngine.GetIndex(" + EmitExpression(index.Target) + ", " + EmitExpression(index.Index) + ")",
             JsCallExpression call => EmitCallExpression(call),
             JsBinaryExpression binary => binary.Operator switch
             {
@@ -2165,7 +2230,7 @@ public static class TypedJintTranspiler
             JsNewExpression newExpr => "new " + SanitizeIdentifier(newExpr.Callee) + "(" + string.Join(", ", newExpr.Arguments.Select(EmitExpression)) + ")",
             JsThisExpression => "this",
             JsTemplateLiteralExpression temp => EmitTemplateLiteral(temp),
-            JsAssignmentExpression assign => EmitExpression(assign.Target) + " " + assign.Operator + " " + EmitExpression(assign.Value),
+            JsAssignmentExpression assign => EmitAssignmentExpression(assign),
             _ => expression.GetType().Name
         };
     }
@@ -2216,16 +2281,65 @@ public static class TypedJintTranspiler
         return $"new Func<{paramTypes}>(( {paramDecl} ) => {{\n{bodyStr}{Pad(1)}}})";
     }
 
+    private static string EmitAssignmentExpression(JsAssignmentExpression assign)
+    {
+        if (assign.Target is JsMemberExpression member && !IsStaticType(member.Target))
+        {
+            var targetStr = EmitExpression(member.Target);
+            var valueStr = EmitExpression(assign.Value);
+            if (assign.Operator == "=")
+            {
+                return $"JavaScriptRuntimeEngine.SetProperty({targetStr}, \"{member.Member}\", {valueStr})";
+            }
+            else
+            {
+                var op = assign.Operator.Substring(0, assign.Operator.Length - 1);
+                var currentVal = $"JavaScriptRuntimeEngine.GetProperty({targetStr}, \"{member.Member}\")";
+                var mappedOp = op switch { "+" => "Add", "-" => "Subtract", "*" => "Multiply", "/" => "Divide", "%" => "Modulo", _ => null };
+                if (mappedOp != null)
+                {
+                    return $"JavaScriptRuntimeEngine.SetProperty({targetStr}, \"{member.Member}\", JavaScriptRuntimeEngine.{mappedOp}({currentVal}, {valueStr}))";
+                }
+                return $"JavaScriptRuntimeEngine.SetProperty({targetStr}, \"{member.Member}\", {currentVal} {op} {valueStr})";
+            }
+        }
+        else if (assign.Target is JsIndexExpression index && !IsStaticType(index.Target))
+        {
+            var targetStr = EmitExpression(index.Target);
+            var indexStr = EmitExpression(index.Index);
+            var valueStr = EmitExpression(assign.Value);
+            if (assign.Operator == "=")
+            {
+                return $"JavaScriptRuntimeEngine.SetIndex({targetStr}, {indexStr}, {valueStr})";
+            }
+            else
+            {
+                var op = assign.Operator.Substring(0, assign.Operator.Length - 1);
+                var currentVal = $"JavaScriptRuntimeEngine.GetIndex({targetStr}, {indexStr})";
+                var mappedOp = op switch { "+" => "Add", "-" => "Subtract", "*" => "Multiply", "/" => "Divide", "%" => "Modulo", _ => null };
+                if (mappedOp != null)
+                {
+                    return $"JavaScriptRuntimeEngine.SetIndex({targetStr}, {indexStr}, JavaScriptRuntimeEngine.{mappedOp}({currentVal}, {valueStr}))";
+                }
+                return $"JavaScriptRuntimeEngine.SetIndex({targetStr}, {indexStr}, {currentVal} {op} {valueStr})";
+            }
+        }
+        
+        return EmitExpression(assign.Target) + " " + assign.Operator + " " + EmitExpression(assign.Value);
+    }
+
     private static string EmitMemberExpression(JsMemberExpression member)
     {
         var targetStr = EmitExpression(member.Target);
         if (member.Member == "length")
         {
-            return targetStr + ".Length";
+            return IsStaticType(member.Target)
+                ? targetStr + ".Length"
+                : $"((dynamic){targetStr}).Length";
         }
         if (!IsStaticType(member.Target))
         {
-            return $"((dynamic){targetStr}).{SanitizeIdentifier(member.Member)}";
+            return $"JavaScriptRuntimeEngine.GetProperty({targetStr}, \"{member.Member}\")";
         }
         return targetStr + "." + SanitizeIdentifier(member.Member);
     }
@@ -2316,6 +2430,13 @@ public static class TypedJintTranspiler
             {
                 return mappedName + "(" + string.Join(", ", call.Arguments.Select(EmitExpression)) + ")";
             }
+        }
+
+        if (call.Target is JsMemberExpression memberExpr && !IsStaticType(memberExpr.Target))
+        {
+            var targetStr = EmitExpression(memberExpr.Target);
+            var argsStr = string.Join(", ", call.Arguments.Select(x => $"({EmitExpression(x)})"));
+            return $"JavaScriptRuntimeEngine.InvokeMethod({targetStr}, \"{memberExpr.Member}\", new object?[] {{ {argsStr} }})";
         }
 
         return EmitExpression(call.Target) + "(" + string.Join(", ", call.Arguments.Select(EmitExpression)) + ")";

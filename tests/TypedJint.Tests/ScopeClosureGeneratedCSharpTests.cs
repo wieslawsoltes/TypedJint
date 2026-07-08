@@ -81,6 +81,7 @@ public sealed class ScopeClosureGeneratedCSharpTests
             function runDynamic() {
                 const counter = new Counter(41);
                 console.log("runtime", counter.next());
+                for (let k in counter) {}
                 return counter.next();
             }
             """);

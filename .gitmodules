@@ -1,0 +1,3 @@
+[submodule "ext/ProGPU"]
+	path = ext/ProGPU
+	url = https://github.com/wieslawsoltes/ProGPU.git

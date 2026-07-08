@@ -424,6 +424,10 @@ public class NewFeaturesVerificationTests
         ";
 
         var result = engine.Execute(source);
+        if (result.CompiledFunctions.Count == 0)
+        {
+            throw new Exception("Diagnostics: " + string.Join("\n", result.Diagnostics.Select(d => $"{d.Code}: [{d.Severity}] {d.Message}")));
+        }
         Assert.NotEmpty(result.CompiledFunctions);
         Assert.True(result.CompiledFunctions.ContainsKey("getCounterValue"));
 
@@ -436,5 +440,172 @@ public class NewFeaturesVerificationTests
         var next = counterType.GetMethod("next")!;
 
         Assert.Equal(42.0, Convert.ToDouble(next.Invoke(counter, null)));
+    }
+
+    [Fact]
+    public void TestRoughJsCompilationAndDrawing()
+    {
+        var options = new TypedJintOptions
+        {
+            Backend = TypedBackendKind.CSharp,
+            CompilationMode = TypedCompilationMode.CompileSafeFunctionsOnly,
+            EnableCompilation = true,
+            ThrowOnCompilationFailure = true
+        };
+
+        var engine = new TypedJintEngine(options);
+        var source = @"
+            /**
+             * @param {CanvasRenderingContext2D} ctx
+             */
+            function drawRoughRect(ctx) {
+                ctx.fillStyle = 'red';
+                ctx.beginPath();
+                ctx.rect(10, 10, 100, 100);
+                ctx.fill();
+                
+                ctx.strokeStyle = 'blue';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(10, 10);
+                ctx.lineTo(110, 110);
+                ctx.stroke();
+            }
+        ";
+
+        var result = engine.Execute(source);
+        if (result.CompiledFunctions.Count == 0)
+        {
+            throw new Exception("Diagnostics: " + string.Join("\n", result.Diagnostics.Select(d => $"{d.Code}: [{d.Severity}] {d.Message}")));
+        }
+        Assert.NotEmpty(result.CompiledFunctions);
+        Assert.True(result.CompiledFunctions.ContainsKey("drawRoughRect"));
+
+        var canvas = new HTMLCanvasElement();
+        var ctx = (CanvasRenderingContext2D)canvas.getContext("2d")!;
+        var drawRoughRect = result.CompiledFunctions["drawRoughRect"];
+        drawRoughRect.Invoke(ctx);
+
+        // Verify ProGPU DrawingContext has received the rectangle and path drawing commands
+        Assert.NotEmpty(ctx.DrawingContext.Commands);
+        var drawRectCmd = ctx.DrawingContext.Commands.First(c => c.Type == ProGPU.Scene.RenderCommandType.DrawRect);
+        Assert.Equal(new ProGPU.Scene.Rect(10f, 10f, 100f, 100f), drawRectCmd.Rect);
+        
+        var drawPathCmd = ctx.DrawingContext.Commands.First(c => c.Type == ProGPU.Scene.RenderCommandType.DrawPath);
+        Assert.NotNull(drawPathCmd.Path);
+    }
+
+    [Fact]
+    public void TestThreeJsWebGLSceneCompilation()
+    {
+        var options = new TypedJintOptions
+        {
+            Backend = TypedBackendKind.CSharp,
+            CompilationMode = TypedCompilationMode.CompileSafeFunctionsOnly,
+            EnableCompilation = true,
+            ThrowOnCompilationFailure = true
+        };
+
+        var engine = new TypedJintEngine(options);
+        var source = @"
+            /**
+             * @param {WebGLRenderingContext} gl
+             */
+            function renderScene(gl) {
+                gl.viewport(0, 0, 800, 600);
+                gl.clearColor(0, 0, 0, 1);
+                gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+                var vs = gl.createShader(gl.VERTEX_SHADER);
+                gl.shaderSource(vs, 'void main() {}');
+                gl.compileShader(vs);
+
+                var fs = gl.createShader(gl.FRAGMENT_SHADER);
+                gl.shaderSource(fs, 'void main() {}');
+                gl.compileShader(fs);
+
+                var prog = gl.createProgram();
+                gl.attachShader(prog, vs);
+                gl.attachShader(prog, fs);
+                gl.linkProgram(prog);
+                gl.useProgram(prog);
+
+                var buf = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+                var vertices = [0, 0, 0, 1, 0, 0, 0, 1, 0];
+                gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+                gl.enableVertexAttribArray(0);
+                gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+                gl.drawArrays(gl.TRIANGLES, 0, 3);
+            }
+        ";
+
+        var result = engine.Execute(source);
+        Assert.NotEmpty(result.CompiledFunctions);
+        Assert.True(result.CompiledFunctions.ContainsKey("renderScene"));
+
+        var canvas = new HTMLCanvasElement();
+        var gl = (WebGLRenderingContext)canvas.getContext("webgl")!;
+        var renderScene = result.CompiledFunctions["renderScene"];
+        renderScene.Invoke(gl);
+    }
+
+    [Fact]
+    public void TestLightweightChartsCompilationAndExecution()
+    {
+        var options = new TypedJintOptions
+        {
+            Backend = TypedBackendKind.CSharp,
+            CompilationMode = TypedCompilationMode.CompileSafeFunctionsOnly,
+            EnableCompilation = true,
+            ThrowOnCompilationFailure = true
+        };
+
+        var engine = new TypedJintEngine(options);
+        var source = @"
+            /**
+             * @param {HTMLCanvasElement} canvas
+             * @param {object[]} data
+             */
+            function renderChart(canvas, data) {
+                var ctx = canvas.getContext('2d');
+                ctx.strokeStyle = 'green';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                for (var i = 0; i < data.length; i++) {
+                    var point = data[i];
+                    if (i === 0) {
+                        ctx.moveTo(point.x, point.y);
+                    } else {
+                        ctx.lineTo(point.x, point.y);
+                    }
+                }
+                ctx.stroke();
+            }
+        ";
+
+        var result = engine.Execute(source);
+        if (result.CompiledFunctions.Count == 0)
+        {
+            throw new Exception("Diagnostics: " + string.Join("\n", result.Diagnostics.Select(d => $"{d.Code}: [{d.Severity}] {d.Message}")));
+        }
+        Assert.NotEmpty(result.CompiledFunctions);
+        Assert.True(result.CompiledFunctions.ContainsKey("renderChart"));
+
+        var canvas = new HTMLCanvasElement();
+        var data = new object[]
+        {
+            new Dictionary<string, object> { { "x", 10.0 }, { "y", 20.0 } },
+            new Dictionary<string, object> { { "x", 30.0 }, { "y", 40.0 } }
+        };
+
+        var renderChart = result.CompiledFunctions["renderChart"];
+        renderChart.Invoke(canvas, data);
+
+        var ctx = (CanvasRenderingContext2D)canvas.getContext("2d")!;
+        Assert.NotEmpty(ctx.DrawingContext.Commands);
+        var drawPathCmd = ctx.DrawingContext.Commands.First(c => c.Type == ProGPU.Scene.RenderCommandType.DrawPath);
+        Assert.NotNull(drawPathCmd.Path);
     }
 }

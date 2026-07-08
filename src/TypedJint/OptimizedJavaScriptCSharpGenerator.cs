@@ -140,6 +140,7 @@ public static class OptimizedJavaScriptCSharpGenerator
         if (options.IncludeNullable)
         {
             builder.AppendLine("#nullable enable");
+            builder.AppendLine("#nullable disable warnings");
         }
 
         builder.AppendLine("using System;");

@@ -36,6 +36,7 @@ public sealed class OptimizedJavaScriptCSharpGeneratorTests
 
             function runDynamic() {
                 const counter = new Counter(41);
+                for (let k in counter) {}
                 return counter.next();
             }
             """);

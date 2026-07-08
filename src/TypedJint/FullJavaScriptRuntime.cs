@@ -154,6 +154,28 @@ public sealed class JavaScriptRuntimeEngine
         }
     }
 
+    public static object? InvokeMethod(object? target, string methodName, object?[] args)
+    {
+        if (target is null) return null;
+        var type = target.GetType();
+        var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase;
+        var method = type.GetMethods(flags)
+            .FirstOrDefault(x => string.Equals(x.Name, methodName, StringComparison.OrdinalIgnoreCase) && x.GetParameters().Length == args.Length);
+            
+        if (method != null)
+        {
+            var parameters = method.GetParameters();
+            var convertedArgs = new object?[args.Length];
+            for (int i = 0; i < args.Length; i++)
+            {
+                convertedArgs[i] = args[i] == null ? null : Convert.ChangeType(args[i], parameters[i].ParameterType, CultureInfo.InvariantCulture);
+            }
+            return method.Invoke(target, convertedArgs);
+        }
+        
+        throw new NotSupportedException($"Method '{methodName}' with {args.Length} argument(s) not found on '{type.Name}'.");
+    }
+
     public static object? GetProperty(object? target, string member)
     {
         if (target is null) return null;

@@ -12,4 +12,9 @@
     <PackageReference Include="Jint" Version="4.10.1" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../ext/ProGPU/src/ProGPU.Vector/ProGPU.Vector.csproj" />
+    <ProjectReference Include="../../ext/ProGPU/src/ProGPU.Scene/ProGPU.Scene.csproj" />
+    <ProjectReference Include="../../ext/ProGPU/src/ProGPU.Avalonia/ProGPU.Avalonia.csproj" />
+  </ItemGroup>
 </Project>

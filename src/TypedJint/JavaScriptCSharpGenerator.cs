@@ -48,6 +48,7 @@ public static class JavaScriptCSharpGenerator
         if (options.IncludeNullable)
         {
             builder.AppendLine("#nullable enable");
+            builder.AppendLine("#nullable disable warnings");
         }
 
         builder.AppendLine("using System;");
@@ -85,6 +86,7 @@ public static class JavaScriptCSharpGenerator
         if (options.IncludeNullable)
         {
             builder.AppendLine("#nullable enable");
+            builder.AppendLine("#nullable disable warnings");
         }
 
         builder.AppendLine("using TypedJint;");
@@ -300,7 +302,7 @@ public static class JavaScriptCSharpGenerator
             return source;
         }
 
-        return source.Replace("#nullable enable" + Environment.NewLine, "#nullable enable" + Environment.NewLine + "using System;" + Environment.NewLine, StringComparison.Ordinal);
+        return source.Replace("#nullable enable" + Environment.NewLine + "#nullable disable warnings" + Environment.NewLine, "#nullable enable" + Environment.NewLine + "#nullable disable warnings" + Environment.NewLine + "using System;" + Environment.NewLine, StringComparison.Ordinal);
     }
 
     private static string Pad(int indent) => new(' ', indent * 4);
