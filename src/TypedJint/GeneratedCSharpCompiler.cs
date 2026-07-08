@@ -186,8 +186,7 @@ public static class GeneratedCSharpCompiler
 
         var parseOptions = CSharpParseOptions.Default
             .WithLanguageVersion(options.LanguageVersion)
-            .WithDocumentationMode(DocumentationMode.None)
-            .WithKind(SourceCodeKind.Regular);
+            .WithDocumentationMode(DocumentationMode.None);
         var syntaxTree = CSharpSyntaxTree.ParseText(source, parseOptions);
 
         var compilationOptions = new CSharpCompilationOptions(outputKind)
