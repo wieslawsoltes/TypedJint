@@ -25,7 +25,7 @@ public static class JavaScriptCSharpGenerator
 
         return options.Mode switch
         {
-            JavaScriptCSharpGenerationMode.StaticClass => TypedJintTranspiler.TranspileToCSharp(source, options.ClassName),
+            JavaScriptCSharpGenerationMode.StaticClass => CSharpIntrinsicRewriter.Rewrite(TypedJintTranspiler.TranspileToCSharp(source, options.ClassName)),
             JavaScriptCSharpGenerationMode.TopLevelStatements => GenerateTopLevelStatements(source, options),
             JavaScriptCSharpGenerationMode.RuntimeTopLevelStatements => GenerateRuntimeTopLevelStatements(source, options),
             _ => throw new ArgumentOutOfRangeException(nameof(options), options.Mode, null)
@@ -60,7 +60,7 @@ public static class JavaScriptCSharpGenerator
         var functions = SimpleJsParser.ParseFunctions(source);
         foreach (var function in functions)
         {
-            builder.AppendLine(ToLocalFunction(TypedJintTranspiler.TranspileFunctionToCSharp(function)));
+            builder.AppendLine(ToLocalFunction(CSharpIntrinsicRewriter.Rewrite(TypedJintTranspiler.TranspileFunctionToCSharp(function))));
         }
 
         var globalSource = RemoveFunctionDeclarations(source, functions).Trim();
@@ -73,7 +73,7 @@ public static class JavaScriptCSharpGenerator
             }
         }
 
-        return builder.ToString();
+        return CSharpIntrinsicRewriter.Rewrite(builder.ToString());
     }
 
     private static string GenerateRuntimeTopLevelStatements(string source, JavaScriptCSharpGenerationOptions options)

@@ -135,8 +135,13 @@ public static class OptimizedJavaScriptCSharpGenerator
     {
         try
         {
+            var globals = new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["Math"] = JavaScriptMath.Instance
+            };
+
             var compileResult = new TypedJsCompiler(
-                new Dictionary<string, object?>(StringComparer.Ordinal),
+                globals,
                 new TypedJintOptions { ThrowOnCompilationFailure = false }).Compile(functionSource);
 
             diagnostics.AddRange(compileResult.Diagnostics);
@@ -186,7 +191,7 @@ public static class OptimizedJavaScriptCSharpGenerator
 
     private static void EmitNativeMethod(StringBuilder builder, JsFunctionDeclaration function, OptimizedJavaScriptCSharpGenerationOptions options)
     {
-        var method = TypedJintTranspiler.TranspileFunctionToCSharp(function)
+        var method = CSharpIntrinsicRewriter.Rewrite(TypedJintTranspiler.TranspileFunctionToCSharp(function))
             .Replace("public static ", "public ", StringComparison.Ordinal)
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Split('\n');
