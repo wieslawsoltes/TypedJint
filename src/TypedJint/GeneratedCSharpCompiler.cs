@@ -65,7 +65,7 @@ public sealed class GeneratedCSharpScriptInstance
         ArgumentException.ThrowIfNullOrWhiteSpace(functionName);
         var method = ScriptType.GetMethod("Invoke", BindingFlags.Instance | BindingFlags.Public)
             ?? throw new MissingMethodException(ScriptType.FullName, "Invoke");
-        return method.Invoke(Instance, [functionName, arguments]);
+        return method.Invoke(Instance, new object?[] { functionName, arguments });
     }
 
     public object? InvokeMethod(string methodName, params object?[] arguments)
@@ -193,8 +193,7 @@ public static class GeneratedCSharpCompiler
         var compilationOptions = new CSharpCompilationOptions(outputKind)
             .WithOptimizationLevel(options.Optimize ? OptimizationLevel.Release : OptimizationLevel.Debug)
             .WithNullableContextOptions(NullableContextOptions.Enable)
-            .WithAllowUnsafe(options.AllowUnsafe)
-            .WithAssemblyIdentityComparer(DesktopAssemblyIdentityComparer.Default);
+            .WithAllowUnsafe(options.AllowUnsafe);
 
         var compilation = CSharpCompilation.Create(
             options.AssemblyName + "." + Guid.NewGuid().ToString("N"),
