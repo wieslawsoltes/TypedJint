@@ -42,6 +42,7 @@ public sealed class OptimizedJavaScriptCSharpGeneratorTests
 
         Assert.Contains("sumEven", result.NativeFunctions);
         Assert.Contains("runDynamic", result.RuntimeFunctions);
+        Assert.DoesNotContain(result.Diagnostics, x => x.Severity == TypedDiagnosticSeverity.Warning);
         Assert.Contains("private readonly JavaScriptRuntimeEngine _runtime;", result.Source, StringComparison.Ordinal);
         Assert.Contains("public double sumEven(double limit)", result.Source, StringComparison.Ordinal);
         Assert.Contains("MethodImplOptions.AggressiveInlining", result.Source, StringComparison.Ordinal);
@@ -50,7 +51,7 @@ public sealed class OptimizedJavaScriptCSharpGeneratorTests
     }
 
     [Fact]
-    public void SkipsNativeMethodsWhenSourceCannotBeParsedByTypedSubset()
+    public void RuntimeOnlyDynamicFunctionIsClassifiedWithoutNativeWarnings()
     {
         var result = OptimizedJavaScriptCSharpGenerator.Generate(
             """
@@ -62,7 +63,7 @@ public sealed class OptimizedJavaScriptCSharpGeneratorTests
 
         Assert.Empty(result.NativeFunctions);
         Assert.Contains("dynamicObject", result.RuntimeFunctions);
-        Assert.Contains("Native C# generation skipped", string.Join(Environment.NewLine, result.Diagnostics.Select(x => x.Message)), StringComparison.Ordinal);
+        Assert.DoesNotContain(result.Diagnostics, x => x.Severity == TypedDiagnosticSeverity.Warning);
         Assert.Contains("_runtime.Execute(Source);", result.Source, StringComparison.Ordinal);
     }
 
