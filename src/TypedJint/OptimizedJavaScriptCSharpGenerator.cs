@@ -186,7 +186,7 @@ public static class OptimizedJavaScriptCSharpGenerator
 
     private static void EmitNativeMethod(StringBuilder builder, JsFunctionDeclaration function, OptimizedJavaScriptCSharpGenerationOptions options)
     {
-        var method = TypedJintTranspiler.TranspileFunctionToCSharp(function)
+        var method = CSharpIntrinsicRewriter.Rewrite(TypedJintTranspiler.TranspileFunctionToCSharp(function))
             .Replace("public static ", "public ", StringComparison.Ordinal)
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Split('\n');
