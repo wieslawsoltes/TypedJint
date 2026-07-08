@@ -25,7 +25,7 @@ public sealed record GeneratedCSharpDiagnostic(
     }
 }
 
-public sealed class GeneratedCSharpBuildResult : IDisposable
+public sealed class GeneratedCSharpBuildResult
 {
     public required string Source { get; init; }
     public required bool Success { get; init; }
@@ -37,13 +37,13 @@ public sealed class GeneratedCSharpBuildResult : IDisposable
         ? "No diagnostics."
         : string.Join(Environment.NewLine, Diagnostics.Select(x => x.ToString()));
 
-    public void Dispose()
+    public void Unload()
     {
         LoadContext?.Unload();
     }
 }
 
-public sealed class GeneratedCSharpExecutionResult : IDisposable
+public sealed class GeneratedCSharpExecutionResult
 {
     public required GeneratedCSharpBuildResult Build { get; init; }
     public object? ReturnValue { get; init; }
@@ -52,9 +52,9 @@ public sealed class GeneratedCSharpExecutionResult : IDisposable
 
     public bool Success => Build.Success && Exception is null;
 
-    public void Dispose()
+    public void Unload()
     {
-        Build.Dispose();
+        Build.Unload();
     }
 }
 
@@ -307,7 +307,7 @@ public static class GeneratedCSharpCompiler
 
         protected override Assembly? Load(AssemblyName assemblyName)
         {
-            return Default.Assemblies.FirstOrDefault(
+            return AssemblyLoadContext.Default.Assemblies.FirstOrDefault(
                 assembly => AssemblyName.ReferenceMatchesDefinition(assembly.GetName(), assemblyName));
         }
     }
