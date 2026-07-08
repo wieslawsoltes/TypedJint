@@ -7,6 +7,7 @@ It keeps Jint as the JavaScript semantic runtime, then adds:
 - JSDoc-based type annotations
 - safe-function compilation to .NET delegates through expression trees
 - JavaScript-to-C# generation in class, top-level statement, runtime-compatible, and optimized hybrid modes
+- Roslyn-based generated C# build/run support
 - strongly typed compiled delegate access for low-overhead invocation
 - verified compiler output: semantic signature, delegate signature, normalized IR, C# preview, and diagnostics
 - optional runtime equivalence checks against Jint for pure functions
@@ -38,6 +39,7 @@ The statically compiled subset supports:
 - array literals and index access
 - member access
 - method calls on typed CLR/DOM objects
+- .NET-backed standard library calls through `RegisterStandardLibrary()`
 - direct DOM calls such as `document.createElement`, `appendChild`, `classList.add`, `dispatchEvent`
 
 The JavaScript runtime backend covers dynamic JavaScript features through Jint semantics:
@@ -58,7 +60,7 @@ The JavaScript runtime backend covers dynamic JavaScript features through Jint s
 ```csharp
 using TypedJint;
 
-var engine = new TypedJintEngine();
+var engine = new TypedJintEngine().RegisterStandardLibrary();
 
 var source = """
 /**
@@ -141,12 +143,51 @@ Console.WriteLine(generated.Source);
 
 The optimized hybrid mode marks native methods with `MethodImplOptions.AggressiveInlining` by default and exposes `Invoke(...)`/`Evaluate(...)` for runtime-backed dynamic JavaScript.
 
+## Build and run generated C# with Roslyn
+
+```csharp
+var generated = OptimizedJavaScriptCSharpGenerator.Generate("""
+/**
+ * @param {number} a
+ * @param {number} b
+ * @returns {number}
+ */
+function add(a, b) {
+    return a + b;
+}
+
+function answer() {
+    return 42;
+}
+""");
+
+var execution = GeneratedCSharpCompiler.CreateScriptInstance(generated.Source);
+if (!execution.Success)
+{
+    Console.WriteLine(execution.Build.DiagnosticsText);
+    Console.WriteLine(execution.Exception);
+    return;
+}
+
+var script = (GeneratedCSharpScriptInstance)execution.Instance!;
+Console.WriteLine(script.InvokeMethod("add", 10.0, 32.0));
+Console.WriteLine(script.InvokeRuntime("answer"));
+```
+
+For top-level generated C# programs:
+
+```csharp
+var program = JavaScriptCSharpGenerator.GenerateRuntimeTopLevelStatements(source);
+var run = GeneratedCSharpCompiler.RunTopLevelProgram(program);
+Console.WriteLine(run.Success);
+```
+
 ## JavaScript runtime execution
 
 ```csharp
 using TypedJint;
 
-var engine = new JavaScriptRuntimeEngine();
+var engine = new JavaScriptRuntimeEngine().RegisterStandardLibrary();
 
 engine.Execute("""
 class Counter {
@@ -174,7 +215,7 @@ Console.WriteLine(engine.Invoke("runDynamic")); // 42
 ```csharp
 using TypedJint;
 
-var engine = new TypedJintEngine();
+var engine = new TypedJintEngine().RegisterStandardLibrary();
 
 engine.ExecuteVerified("""
 /**
@@ -206,6 +247,8 @@ The playground shows:
 - generated C# preview
 - normalized IR
 - compiler diagnostics
+- Roslyn build diagnostics for generated C#
+- generated C# execution results
 - verified runtime results
 - DOM interop output
 

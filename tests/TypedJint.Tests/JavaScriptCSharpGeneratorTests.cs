@@ -61,7 +61,7 @@ public sealed class JavaScriptCSharpGeneratorTests
             }
             """);
 
-        Assert.Contains("var engine = new JavaScriptRuntimeEngine();", csharp, StringComparison.Ordinal);
+        Assert.Contains("var engine = new JavaScriptRuntimeEngine().RegisterStandardLibrary();", csharp, StringComparison.Ordinal);
         Assert.Contains("engine.Execute(", csharp, StringComparison.Ordinal);
         Assert.Contains("class Counter", csharp, StringComparison.Ordinal);
     }

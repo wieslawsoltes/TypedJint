@@ -9,5 +9,6 @@
     <AnalysisLevel>latest</AnalysisLevel>
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+    <NoWarn>$(NoWarn);NU1901;NU1902;NU1903;NU1904</NoWarn>
   </PropertyGroup>
 </Project>
