@@ -135,8 +135,13 @@ public static class OptimizedJavaScriptCSharpGenerator
     {
         try
         {
+            var globals = new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["Math"] = JavaScriptMath.Instance
+            };
+
             var compileResult = new TypedJsCompiler(
-                new Dictionary<string, object?>(StringComparer.Ordinal),
+                globals,
                 new TypedJintOptions { ThrowOnCompilationFailure = false }).Compile(functionSource);
 
             diagnostics.AddRange(compileResult.Diagnostics);
