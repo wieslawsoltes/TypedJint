@@ -64,7 +64,7 @@ public sealed class GeneratedCSharpScriptInstance
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(functionName);
         var method = ScriptType.GetMethod("Invoke", BindingFlags.Instance | BindingFlags.Public)
-            ?? throw new MissingMethodException(ScriptType.FullName, "Invoke");
+            ?? throw new MissingMethodException(ScriptType.FullName ?? ScriptType.Name, "Invoke");
         return method.Invoke(Instance, new object?[] { functionName, arguments });
     }
 
@@ -72,7 +72,7 @@ public sealed class GeneratedCSharpScriptInstance
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(methodName);
         var method = ScriptType.GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public)
-            ?? throw new MissingMethodException(ScriptType.FullName, methodName);
+            ?? throw new MissingMethodException(ScriptType.FullName ?? ScriptType.Name, methodName);
         return method.Invoke(Instance, arguments);
     }
 
@@ -151,7 +151,7 @@ public static class GeneratedCSharpCompiler
                 ?? build.Assembly.GetExportedTypes().FirstOrDefault(x => string.Equals(x.Name, typeName, StringComparison.Ordinal))
                 ?? throw new TypeLoadException($"Generated type '{typeName}' was not found.");
             var instance = Activator.CreateInstance(type)
-                ?? throw new InvalidOperationException($"Generated type '{type.FullName}' could not be instantiated.");
+                ?? throw new InvalidOperationException($"Generated type '{type.FullName ?? type.Name}' could not be instantiated.");
             return new GeneratedCSharpExecutionResult
             {
                 Build = build,
