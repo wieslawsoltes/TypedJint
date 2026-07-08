@@ -42,7 +42,7 @@ public sealed class MainWindow : Window
 
         var runButton = new Button
         {
-            Content = "Compile, verify, run",
+            Content = "Compile, verify, build, run",
             HorizontalAlignment = HorizontalAlignment.Left,
             Margin = new Thickness(0, 0, 8, 8)
         };
@@ -50,7 +50,7 @@ public sealed class MainWindow : Window
 
         var title = new TextBlock
         {
-            Text = "TypedJint JS → native C# where safe + runtime fallback where needed",
+            Text = "TypedJint JS → native C# where safe + runtime fallback where needed + Roslyn build/run",
             FontWeight = FontWeight.SemiBold,
             VerticalAlignment = VerticalAlignment.Center
         };
@@ -75,7 +75,7 @@ public sealed class MainWindow : Window
 
         AddOutputPanel(outputGrid, "Generated C# preview", _csharp, 0);
         AddOutputPanel(outputGrid, "Normalized native IR", _ir, 1);
-        AddOutputPanel(outputGrid, "Diagnostics", _diagnostics, 2);
+        AddOutputPanel(outputGrid, "Diagnostics + Roslyn build", _diagnostics, 2);
         AddOutputPanel(outputGrid, "Execution result", _result, 3);
 
         Grid.SetRow(outputGrid, 1);
@@ -111,13 +111,20 @@ public sealed class MainWindow : Window
 
             diagnostics.AppendLine();
 
+            var generatedRunText = CompileAndRunGeneratedCSharp(generated, diagnostics);
             var verified = TryExecuteVerified(source, diagnostics);
             if (verified is not null)
             {
                 _ir.Text = string.Join(Environment.NewLine + Environment.NewLine, verified.CompilerOutputs.Values.Select(x => x.NormalizedIr));
-                var typedEngine = new TypedJintEngine();
+                var typedEngine = new TypedJintEngine().RegisterStandardLibrary();
                 typedEngine.Execute(source);
-                _result.Text = FormatExecutionResult(typedEngine, verified);
+
+                var resultBuilder = new StringBuilder();
+                resultBuilder.AppendLine(FormatExecutionResult(typedEngine, verified));
+                resultBuilder.AppendLine();
+                resultBuilder.AppendLine(generatedRunText);
+                _result.Text = resultBuilder.ToString();
+
                 diagnostics.AppendLine(FormatDiagnostics(verified));
             }
             else
@@ -126,7 +133,7 @@ public sealed class MainWindow : Window
                     ? "No native typed IR was generated. The source is still represented by runtime-compatible generated C#."
                     : "Native methods were generated. Verified IR is unavailable because the whole script contains dynamic JavaScript.";
 
-                _result.Text = ExecuteWithRuntime(source, generated);
+                _result.Text = generatedRunText;
             }
 
             _diagnostics.Text = diagnostics.ToString();
@@ -134,9 +141,19 @@ public sealed class MainWindow : Window
         catch (Exception ex)
         {
             _csharp.Text = JavaScriptCSharpGenerator.GenerateRuntimeTopLevelStatements(source);
+            var topLevelRun = GeneratedCSharpCompiler.RunTopLevelProgram(_csharp.Text);
             _ir.Text = "No native typed IR was generated.";
-            _diagnostics.Text = diagnostics.AppendLine().AppendLine("Runtime execution failed:").AppendLine(ex.Message).ToString();
-            _result.Text = "Execution failed.";
+            _diagnostics.Text = diagnostics
+                .AppendLine()
+                .AppendLine("Runtime execution failed:")
+                .AppendLine(ex.Message)
+                .AppendLine()
+                .AppendLine("Fallback generated C# build:")
+                .AppendLine(FormatGeneratedBuild(topLevelRun.Build))
+                .ToString();
+            _result.Text = topLevelRun.Success
+                ? "Fallback runtime-compatible generated C# compiled and ran."
+                : "Execution failed.";
         }
     }
 
@@ -144,17 +161,113 @@ public sealed class MainWindow : Window
     {
         try
         {
-            var engine = new TypedJintEngine();
+            var engine = new TypedJintEngine().RegisterStandardLibrary();
             return engine.ExecuteVerified(source, CreateRuntimeCases(source));
         }
         catch (Exception ex)
         {
             diagnostics.AppendLine("Typed native verification skipped for complete script.");
             diagnostics.AppendLine(ex.GetType().Name + ": " + ex.Message);
-            diagnostics.AppendLine("The playground will execute through JavaScriptRuntimeEngine instead of failing.");
+            diagnostics.AppendLine("The playground will execute through generated C# / JavaScriptRuntimeEngine instead of failing.");
             diagnostics.AppendLine();
             return null;
         }
+    }
+
+    private static string CompileAndRunGeneratedCSharp(
+        OptimizedJavaScriptCSharpGenerationResult generated,
+        StringBuilder diagnostics)
+    {
+        var execution = GeneratedCSharpCompiler.CreateScriptInstance(generated.Source, "ScriptModule");
+        diagnostics.AppendLine("Generated C# Roslyn build:");
+        diagnostics.AppendLine(FormatGeneratedBuild(execution.Build));
+        diagnostics.AppendLine();
+
+        if (!execution.Build.Success)
+        {
+            return "generated C# build failed" + Environment.NewLine + execution.Build.DiagnosticsText;
+        }
+
+        if (execution.Exception is not null)
+        {
+            return "generated C# instantiation failed" + Environment.NewLine + execution.Exception.Message;
+        }
+
+        if (execution.Instance is not GeneratedCSharpScriptInstance script)
+        {
+            return "generated C# build succeeded, but no script instance was created.";
+        }
+
+        var builder = new StringBuilder();
+        builder.AppendLine("generated C# build: succeeded");
+        builder.Append("generated type: ").AppendLine(script.ScriptType.FullName);
+        builder.AppendLine();
+
+        foreach (var method in script.PublicScriptMethods.Where(IsCallableNativePreviewMethod))
+        {
+            try
+            {
+                var value = script.InvokeMethod(method.Name);
+                builder.Append("native ").Append(method.Name).Append("() = ").AppendLine(value?.ToString() ?? "null");
+            }
+            catch (Exception ex)
+            {
+                builder.Append("native ").Append(method.Name).Append("() skipped: ").AppendLine(GetUserMessage(ex));
+            }
+        }
+
+        foreach (var function in generated.RuntimeFunctions.Take(8))
+        {
+            try
+            {
+                var value = script.InvokeRuntime(function);
+                builder.Append("runtime ").Append(function).Append("() = ").AppendLine(value?.ToString() ?? "null");
+            }
+            catch (Exception ex)
+            {
+                builder.Append("runtime ").Append(function).Append("() skipped: ").AppendLine(GetUserMessage(ex));
+            }
+        }
+
+        if (generated.NativeFunctions.Count == 0 && generated.RuntimeFunctions.Count == 0)
+        {
+            builder.AppendLine("No callable functions were discovered in generated code.");
+        }
+
+        return builder.ToString();
+    }
+
+    private static bool IsCallableNativePreviewMethod(System.Reflection.MethodInfo method)
+    {
+        if (method.Name is "Invoke" or "Evaluate")
+        {
+            return false;
+        }
+
+        return method.GetParameters().Length == 0;
+    }
+
+    private static string FormatGeneratedBuild(GeneratedCSharpBuildResult build)
+    {
+        var builder = new StringBuilder();
+        builder.Append("success: ").AppendLine(build.Success.ToString());
+        if (build.Diagnostics.Count > 0)
+        {
+            builder.AppendLine(build.DiagnosticsText);
+        }
+        else
+        {
+            builder.AppendLine("No diagnostics.");
+        }
+
+        return builder.ToString();
+    }
+
+    private static string GetUserMessage(Exception ex)
+    {
+        return ex is System.Reflection.TargetInvocationException { InnerException: not null } tie
+            ? tie.InnerException.Message
+            : ex.Message;
     }
 
     private static Dictionary<string, object?[][]> CreateRuntimeCases(string source)
@@ -227,38 +340,6 @@ public sealed class MainWindow : Window
         {
             builder.AppendLine();
             builder.AppendLine(output.ToMarkdown());
-        }
-
-        return builder.ToString();
-    }
-
-    private static string ExecuteWithRuntime(string source, OptimizedJavaScriptCSharpGenerationResult generated)
-    {
-        var runtime = new JavaScriptRuntimeEngine();
-        var result = runtime.Execute(source);
-        var builder = new StringBuilder();
-        builder.AppendLine("runtime execution: loaded");
-        builder.Append("runtime functions: ").AppendLine(FormatList(result.RuntimeFunctions.Keys));
-        builder.Append("class declarations: ").AppendLine(FormatList(result.ClassDeclarations));
-        builder.AppendLine();
-
-        foreach (var function in result.RuntimeFunctions.Keys.Take(8))
-        {
-            try
-            {
-                var value = runtime.Invoke(function);
-                builder.Append(function).Append("() = ").AppendLine(value?.ToString() ?? "null");
-            }
-            catch (Exception ex)
-            {
-                builder.Append(function).Append("() skipped: ").AppendLine(ex.Message);
-            }
-        }
-
-        if (generated.NativeFunctions.Count > 0)
-        {
-            builder.AppendLine();
-            builder.Append("native methods emitted in generated C#: ").AppendLine(FormatList(generated.NativeFunctions));
         }
 
         return builder.ToString();
@@ -379,6 +460,7 @@ class Counter {
 
 function runDynamic() {
     const counter = new Counter(41);
+    console.log("runtime", counter.next());
     return counter.next();
 }
 """;
