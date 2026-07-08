@@ -110,51 +110,51 @@ public sealed class JavaScriptNetwork
     {
     }
 
-    public string getString(string uri)
+    public string getString(string address)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(uri);
+        ArgumentException.ThrowIfNullOrWhiteSpace(address);
 
-        if (uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+        if (address.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
         {
-            return DecodeDataUri(uri);
+            return DecodeDataUri(address);
         }
 
-        return Http.GetStringAsync(uri).GetAwaiter().GetResult();
+        return Http.GetStringAsync(address).GetAwaiter().GetResult();
     }
 
-    public byte[] getBytes(string uri)
+    public byte[] getBytes(string address)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(uri);
+        ArgumentException.ThrowIfNullOrWhiteSpace(address);
 
-        if (uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+        if (address.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
         {
-            return Encoding.UTF8.GetBytes(DecodeDataUri(uri));
+            return Encoding.UTF8.GetBytes(DecodeDataUri(address));
         }
 
-        return Http.GetByteArrayAsync(uri).GetAwaiter().GetResult();
+        return Http.GetByteArrayAsync(address).GetAwaiter().GetResult();
     }
 
-    public string postString(string uri, string content) => postString(uri, content, "text/plain");
+    public string postString(string address, string content) => postString(address, content, "text/plain");
 
-    public string postString(string uri, string content, string mediaType)
+    public string postString(string address, string content, string mediaType)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(uri);
+        ArgumentException.ThrowIfNullOrWhiteSpace(address);
         using var httpContent = new StringContent(content, Encoding.UTF8, mediaType);
-        using var response = Http.PostAsync(uri, httpContent).GetAwaiter().GetResult();
+        using var response = Http.PostAsync(address, httpContent).GetAwaiter().GetResult();
         response.EnsureSuccessStatusCode();
         return response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
     }
 
-    private static string DecodeDataUri(string uri)
+    private static string DecodeDataUri(string address)
     {
-        var comma = uri.IndexOf(',', StringComparison.Ordinal);
+        var comma = address.IndexOf(',', StringComparison.Ordinal);
         if (comma < 0)
         {
             throw new FormatException("Invalid data URI.");
         }
 
-        var metadata = uri[5..comma];
-        var data = uri[(comma + 1)..];
+        var metadata = address[5..comma];
+        var data = address[(comma + 1)..];
         return metadata.Contains(";base64", StringComparison.OrdinalIgnoreCase)
             ? Encoding.UTF8.GetString(Convert.FromBase64String(data))
             : WebUtility.UrlDecode(data);
