@@ -51,7 +51,7 @@ public sealed class MainWindow : Window
 
         var title = new TextBlock
         {
-            Text = "TypedJint JS → generated C# + Roslyn build/run + full runtime semantics",
+            Text = "TypedJint JS → readable C# preview + Roslyn executable build/run",
             FontWeight = FontWeight.SemiBold,
             VerticalAlignment = VerticalAlignment.Center
         };
@@ -94,7 +94,7 @@ public sealed class MainWindow : Window
         try
         {
             var generated = OptimizedJavaScriptCSharpGenerator.Generate(source);
-            _csharp.Text = generated.Source;
+            _csharp.Text = generated.PreviewSource;
 
             diagnostics.AppendLine("Generated C# mode: optimized hybrid");
             diagnostics.Append("native functions: ").AppendLine(FormatList(generated.NativeFunctions));
@@ -115,29 +115,24 @@ public sealed class MainWindow : Window
             var generatedRunText = CompileAndRunGeneratedCSharp(generated, diagnostics);
             var nativeSource = BuildNativeSource(source, generated.NativeFunctions);
             var verified = TryExecuteVerified(nativeSource, diagnostics);
+
+            _ir.Text = verified is null
+                ? generated.NativeFunctions.Count == 0
+                    ? "No native typed IR was generated. Runtime functions are represented by generated C# facades and executed by the generated runtime module."
+                    : "Native methods were generated. Native IR verification was skipped."
+                : string.Join(Environment.NewLine + Environment.NewLine, verified.CompilerOutputs.Values.Select(x => x.NormalizedIr));
+
+            var resultBuilder = new StringBuilder();
             if (verified is not null)
             {
-                _ir.Text = string.Join(Environment.NewLine + Environment.NewLine, verified.CompilerOutputs.Values.Select(x => x.NormalizedIr));
                 var typedEngine = new TypedJintEngine().RegisterStandardLibrary();
                 typedEngine.Execute(nativeSource);
-
-                var resultBuilder = new StringBuilder();
                 resultBuilder.AppendLine(FormatExecutionResult(typedEngine, verified));
-                resultBuilder.AppendLine();
-                resultBuilder.AppendLine(generatedRunText);
-                _result.Text = resultBuilder.ToString();
-
                 diagnostics.AppendLine(FormatDiagnostics(verified));
             }
-            else
-            {
-                _ir.Text = generated.NativeFunctions.Count == 0
-                    ? "No native typed IR was generated. The source is still represented by runtime-compatible generated C#."
-                    : "Native methods were generated. Native IR verification was skipped.";
 
-                _result.Text = generatedRunText;
-            }
-
+            resultBuilder.AppendLine(generatedRunText);
+            _result.Text = resultBuilder.ToString();
             _diagnostics.Text = diagnostics.ToString();
         }
         catch (Exception ex)
@@ -204,33 +199,31 @@ public sealed class MainWindow : Window
         }
     }
 
-    private static string CompileAndRunGeneratedCSharp(
-        OptimizedJavaScriptCSharpGenerationResult generated,
-        StringBuilder diagnostics)
+    private static string CompileAndRunGeneratedCSharp(OptimizedJavaScriptCSharpGenerationResult generated, StringBuilder diagnostics)
     {
         using var capture = JavaScriptConsole.Capture();
         var execution = GeneratedCSharpCompiler.CreateScriptInstance(generated.Source, "ScriptModule");
-        diagnostics.AppendLine("Generated C# Roslyn build:");
+        diagnostics.AppendLine("Generated executable C# Roslyn build:");
         diagnostics.AppendLine(FormatGeneratedBuild(execution.Build));
         diagnostics.AppendLine();
 
         if (!execution.Build.Success)
         {
-            return "generated C# build failed" + Environment.NewLine + execution.Build.DiagnosticsText;
+            return "generated executable C# build failed" + Environment.NewLine + execution.Build.DiagnosticsText;
         }
 
         if (execution.Exception is not null)
         {
-            return "generated C# instantiation failed" + Environment.NewLine + execution.Exception.Message;
+            return "generated executable C# instantiation failed" + Environment.NewLine + execution.Exception.Message;
         }
 
         if (execution.Instance is not GeneratedCSharpScriptInstance script)
         {
-            return "generated C# build succeeded, but no script instance was created.";
+            return "generated executable C# build succeeded, but no script instance was created.";
         }
 
         var builder = new StringBuilder();
-        builder.AppendLine("generated C# build: succeeded");
+        builder.AppendLine("generated executable C# build: succeeded");
         builder.Append("generated type: ").AppendLine(script.ScriptType.FullName);
         builder.AppendLine();
 
@@ -260,11 +253,6 @@ public sealed class MainWindow : Window
             }
         }
 
-        if (generated.NativeFunctions.Count == 0 && generated.RuntimeFunctions.Count == 0)
-        {
-            builder.AppendLine("No callable functions were discovered in generated code.");
-        }
-
         var consoleText = FormatConsoleOutput(capture);
         if (!string.IsNullOrWhiteSpace(consoleText))
         {
@@ -277,27 +265,14 @@ public sealed class MainWindow : Window
 
     private static bool IsCallableNativePreviewMethod(System.Reflection.MethodInfo method)
     {
-        if (method.Name is "Invoke" or "Evaluate")
-        {
-            return false;
-        }
-
-        return method.GetParameters().Length == 0;
+        return method.Name is not ("Invoke" or "Evaluate") && method.GetParameters().Length == 0;
     }
 
     private static string FormatGeneratedBuild(GeneratedCSharpBuildResult build)
     {
         var builder = new StringBuilder();
         builder.Append("success: ").AppendLine(build.Success.ToString());
-        if (build.Diagnostics.Count > 0)
-        {
-            builder.AppendLine(build.DiagnosticsText);
-        }
-        else
-        {
-            builder.AppendLine("No diagnostics.");
-        }
-
+        builder.AppendLine(build.Diagnostics.Count > 0 ? build.DiagnosticsText : "No diagnostics.");
         return builder.ToString();
     }
 
@@ -334,12 +309,9 @@ public sealed class MainWindow : Window
             return "[function]";
         }
 
-        if (value is Array array)
-        {
-            return "[" + string.Join(", ", array.Cast<object?>().Select(FormatResultValue)) + "]";
-        }
-
-        return Convert.ToString(value, CultureInfo.InvariantCulture) ?? value.ToString() ?? string.Empty;
+        return value is Array array
+            ? "[" + string.Join(", ", array.Cast<object?>().Select(FormatResultValue)) + "]"
+            : Convert.ToString(value, CultureInfo.InvariantCulture) ?? value.ToString() ?? string.Empty;
     }
 
     private static string GetUserMessage(Exception ex)
@@ -363,26 +335,6 @@ public sealed class MainWindow : Window
                     new object?[] { 0.0 },
                     new object?[] { 6.0 },
                     new object?[] { 10.0 }
-                };
-            }
-
-            if (names.Contains("factorial"))
-            {
-                cases["factorial"] = new[]
-                {
-                    new object?[] { 1.0 },
-                    new object?[] { 3.0 },
-                    new object?[] { 5.0 }
-                };
-            }
-
-            if (names.Contains("abs"))
-            {
-                cases["abs"] = new[]
-                {
-                    new object?[] { -10.0 },
-                    new object?[] { 0.0 },
-                    new object?[] { 42.0 }
                 };
             }
 
@@ -434,27 +386,6 @@ public sealed class MainWindow : Window
         if (verified.Compilation.CompiledFunctions.ContainsKey("sumEven"))
         {
             builder.Append("sumEven(10) = ").AppendLine(FormatResultValue(engine.Invoke("sumEven", 10.0)));
-        }
-
-        if (verified.Compilation.CompiledFunctions.ContainsKey("factorial"))
-        {
-            builder.Append("factorial(5) = ").AppendLine(FormatResultValue(engine.Invoke("factorial", 5.0)));
-        }
-
-        if (verified.Compilation.CompiledFunctions.ContainsKey("abs"))
-        {
-            builder.Append("abs(-42) = ").AppendLine(FormatResultValue(engine.Invoke("abs", -42.0)));
-        }
-
-        if (verified.Compilation.CompiledFunctions.ContainsKey("setupButton"))
-        {
-            var button = engine.Document.createElement("button");
-            engine.Invoke("setupButton", button);
-            builder.AppendLine();
-            builder.AppendLine("DOM interop:");
-            builder.Append("button.textContent = ").AppendLine(button.textContent);
-            builder.Append("button.classList = ").AppendLine(button.classList.ToString());
-            builder.Append("button.style.backgroundColor = ").AppendLine(button.style.backgroundColor);
         }
 
         return builder.ToString();
