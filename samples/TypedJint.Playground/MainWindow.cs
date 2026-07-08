@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using Avalonia;
 using Avalonia.Controls;
@@ -50,7 +51,7 @@ public sealed class MainWindow : Window
 
         var title = new TextBlock
         {
-            Text = "TypedJint JS → native C# where safe + runtime fallback where needed + Roslyn build/run",
+            Text = "TypedJint JS → generated C# + Roslyn build/run + full runtime semantics",
             FontWeight = FontWeight.SemiBold,
             VerticalAlignment = VerticalAlignment.Center
         };
@@ -141,6 +142,7 @@ public sealed class MainWindow : Window
         catch (Exception ex)
         {
             _csharp.Text = JavaScriptCSharpGenerator.GenerateRuntimeTopLevelStatements(source);
+            using var capture = JavaScriptConsole.Capture();
             var topLevelRun = GeneratedCSharpCompiler.RunTopLevelProgram(_csharp.Text);
             _ir.Text = "No native typed IR was generated.";
             _diagnostics.Text = diagnostics
@@ -152,7 +154,7 @@ public sealed class MainWindow : Window
                 .AppendLine(FormatGeneratedBuild(topLevelRun.Build))
                 .ToString();
             _result.Text = topLevelRun.Success
-                ? "Fallback runtime-compatible generated C# compiled and ran."
+                ? "Fallback runtime-compatible generated C# compiled and ran." + Environment.NewLine + FormatConsoleOutput(capture)
                 : "Execution failed.";
         }
     }
@@ -178,6 +180,7 @@ public sealed class MainWindow : Window
         OptimizedJavaScriptCSharpGenerationResult generated,
         StringBuilder diagnostics)
     {
+        using var capture = JavaScriptConsole.Capture();
         var execution = GeneratedCSharpCompiler.CreateScriptInstance(generated.Source, "ScriptModule");
         diagnostics.AppendLine("Generated C# Roslyn build:");
         diagnostics.AppendLine(FormatGeneratedBuild(execution.Build));
@@ -208,7 +211,7 @@ public sealed class MainWindow : Window
             try
             {
                 var value = script.InvokeMethod(method.Name);
-                builder.Append("native ").Append(method.Name).Append("() = ").AppendLine(value?.ToString() ?? "null");
+                builder.Append("native ").Append(method.Name).Append("() = ").AppendLine(FormatResultValue(value));
             }
             catch (Exception ex)
             {
@@ -221,7 +224,7 @@ public sealed class MainWindow : Window
             try
             {
                 var value = script.InvokeRuntime(function);
-                builder.Append("runtime ").Append(function).Append("() = ").AppendLine(value?.ToString() ?? "null");
+                builder.Append("runtime ").Append(function).Append("() = ").AppendLine(FormatResultValue(value));
             }
             catch (Exception ex)
             {
@@ -232,6 +235,13 @@ public sealed class MainWindow : Window
         if (generated.NativeFunctions.Count == 0 && generated.RuntimeFunctions.Count == 0)
         {
             builder.AppendLine("No callable functions were discovered in generated code.");
+        }
+
+        var consoleText = FormatConsoleOutput(capture);
+        if (!string.IsNullOrWhiteSpace(consoleText))
+        {
+            builder.AppendLine();
+            builder.Append(consoleText);
         }
 
         return builder.ToString();
@@ -261,6 +271,47 @@ public sealed class MainWindow : Window
         }
 
         return builder.ToString();
+    }
+
+    private static string FormatConsoleOutput(JavaScriptConsoleCapture capture)
+    {
+        var builder = new StringBuilder();
+        var stdout = capture.Output.ToString();
+        var stderr = capture.Error.ToString();
+
+        if (!string.IsNullOrWhiteSpace(stdout))
+        {
+            builder.AppendLine("console output:");
+            builder.Append(stdout.TrimEnd()).AppendLine();
+        }
+
+        if (!string.IsNullOrWhiteSpace(stderr))
+        {
+            builder.AppendLine("console error:");
+            builder.Append(stderr.TrimEnd()).AppendLine();
+        }
+
+        return builder.ToString();
+    }
+
+    private static string FormatResultValue(object? value)
+    {
+        if (value is null)
+        {
+            return "null";
+        }
+
+        if (value is Delegate || value.GetType().FullName?.StartsWith("System.Func`", StringComparison.Ordinal) == true)
+        {
+            return "[function]";
+        }
+
+        if (value is Array array)
+        {
+            return "[" + string.Join(", ", array.Cast<object?>().Select(FormatResultValue)) + "]";
+        }
+
+        return Convert.ToString(value, CultureInfo.InvariantCulture) ?? value.ToString() ?? string.Empty;
     }
 
     private static string GetUserMessage(Exception ex)
@@ -354,17 +405,17 @@ public sealed class MainWindow : Window
 
         if (verified.Compilation.CompiledFunctions.ContainsKey("sumEven"))
         {
-            builder.Append("sumEven(10) = ").AppendLine(Convert.ToString(engine.Invoke("sumEven", 10.0), System.Globalization.CultureInfo.InvariantCulture));
+            builder.Append("sumEven(10) = ").AppendLine(FormatResultValue(engine.Invoke("sumEven", 10.0)));
         }
 
         if (verified.Compilation.CompiledFunctions.ContainsKey("factorial"))
         {
-            builder.Append("factorial(5) = ").AppendLine(Convert.ToString(engine.Invoke("factorial", 5.0), System.Globalization.CultureInfo.InvariantCulture));
+            builder.Append("factorial(5) = ").AppendLine(FormatResultValue(engine.Invoke("factorial", 5.0)));
         }
 
         if (verified.Compilation.CompiledFunctions.ContainsKey("abs"))
         {
-            builder.Append("abs(-42) = ").AppendLine(Convert.ToString(engine.Invoke("abs", -42.0), System.Globalization.CultureInfo.InvariantCulture));
+            builder.Append("abs(-42) = ").AppendLine(FormatResultValue(engine.Invoke("abs", -42.0)));
         }
 
         if (verified.Compilation.CompiledFunctions.ContainsKey("setupButton"))
@@ -440,13 +491,17 @@ function sumEven(limit) {
 }
 
 function createCounter() {
-    let count = 0;
+    let count = 0; // This variable is enclosed
 
     return function() {
         count++;
         return count;
     };
 }
+
+const counter = createCounter();
+console.log(counter());
+console.log(counter());
 
 class Counter {
     constructor(value) {
