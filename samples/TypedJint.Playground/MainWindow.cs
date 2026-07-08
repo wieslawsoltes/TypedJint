@@ -316,7 +316,7 @@ public sealed class MainWindow : Window
 
     private static string GetUserMessage(Exception ex)
     {
-        return ex is System.Reflection.TargetInvocationException { InnerException: not null } tie
+        return ex is System.Reflection.TargetInvocationException tie && tie.InnerException != null
             ? tie.InnerException.Message
             : ex.Message;
     }

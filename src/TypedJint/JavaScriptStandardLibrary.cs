@@ -1,8 +1,15 @@
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
+using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace TypedJint;
 
@@ -16,7 +23,16 @@ public static class JavaScriptStandardLibraryExtensions
         engine.SetValue("net", JavaScriptNetwork.Instance);
         engine.SetValue("encoding", JavaScriptEncoding.Instance);
         engine.SetValue("json", JavaScriptJson.Instance);
+        engine.SetValue("JSON", JavaScriptJson.Instance);
         engine.SetValue("time", JavaScriptTime.Instance);
+        
+        // Register Global Functions
+        engine.SetValue("fetch", new Func<string, JavaScriptResponse>(JavaScriptStandardLibrary.Fetch));
+        engine.SetValue("setTimeout", new Func<Action, double, double>(JavaScriptStandardLibrary.setTimeout));
+        engine.SetValue("clearTimeout", new Action<double>(JavaScriptStandardLibrary.clearTimeout));
+        engine.SetValue("setInterval", new Func<Action, double, double>(JavaScriptStandardLibrary.setInterval));
+        engine.SetValue("clearInterval", new Action<double>(JavaScriptStandardLibrary.clearInterval));
+
         return engine;
     }
 
@@ -27,9 +43,128 @@ public static class JavaScriptStandardLibraryExtensions
         engine.SetValue("net", JavaScriptNetwork.Instance);
         engine.SetValue("encoding", JavaScriptEncoding.Instance);
         engine.SetValue("json", JavaScriptJson.Instance);
+        engine.SetValue("JSON", JavaScriptJson.Instance);
         engine.SetValue("time", JavaScriptTime.Instance);
+
+        // Register Global Functions
+        engine.SetValue("fetch", new Func<string, JavaScriptResponse>(JavaScriptStandardLibrary.Fetch));
+        engine.SetValue("setTimeout", new Func<Action, double, double>(JavaScriptStandardLibrary.setTimeout));
+        engine.SetValue("clearTimeout", new Action<double>(JavaScriptStandardLibrary.clearTimeout));
+        engine.SetValue("setInterval", new Func<Action, double, double>(JavaScriptStandardLibrary.setInterval));
+        engine.SetValue("clearInterval", new Action<double>(JavaScriptStandardLibrary.clearInterval));
+
         return engine;
     }
+}
+
+public static class JavaScriptStandardLibrary
+{
+    private static readonly HttpClient Http = new();
+    private static int _nextTimerId = 1;
+    private static readonly ConcurrentDictionary<int, CancellationTokenSource> ActiveTimers = new();
+
+    public static JavaScriptResponse Fetch(string url)
+    {
+        if (url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+        {
+            var comma = url.IndexOf(',', StringComparison.Ordinal);
+            if (comma < 0)
+            {
+                throw new FormatException("Invalid data URI.");
+            }
+
+            var metadata = url[5..comma];
+            var data = url[(comma + 1)..];
+            var contentStr = metadata.Contains(";base64", StringComparison.OrdinalIgnoreCase)
+                ? Encoding.UTF8.GetString(Convert.FromBase64String(data))
+                : WebUtility.UrlDecode(data);
+
+            var mockResponse = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(contentStr)
+            };
+            return new JavaScriptResponse(mockResponse);
+        }
+
+        var response = Http.GetAsync(url).GetAwaiter().GetResult();
+        return new JavaScriptResponse(response);
+    }
+
+    public static double setTimeout(Action callback, double delay)
+    {
+        var id = Interlocked.Increment(ref _nextTimerId);
+        var cts = new CancellationTokenSource();
+        ActiveTimers[id] = cts;
+
+        Task.Delay((int)delay, cts.Token).ContinueWith(t =>
+        {
+            if (!t.IsCanceled)
+            {
+                try
+                {
+                    callback();
+                }
+                catch
+                {
+                    // ignore callback exceptions
+                }
+            }
+            ActiveTimers.TryRemove(id, out _);
+        }, TaskScheduler.Default);
+
+        return id;
+    }
+
+    public static void clearTimeout(double id)
+    {
+        if (ActiveTimers.TryRemove((int)id, out var cts))
+        {
+            cts.Cancel();
+            cts.Dispose();
+        }
+    }
+
+    public static double setInterval(Action callback, double delay)
+    {
+        var id = Interlocked.Increment(ref _nextTimerId);
+        var cts = new CancellationTokenSource();
+        ActiveTimers[id] = cts;
+
+        Task.Run(async () =>
+        {
+            var token = cts.Token;
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay((int)delay, token);
+                    if (!token.IsCancellationRequested)
+                    {
+                        callback();
+                    }
+                }
+                catch
+                {
+                    break;
+                }
+            }
+            ActiveTimers.TryRemove(id, out _);
+        });
+
+        return id;
+    }
+
+    public static void clearInterval(double id) => clearTimeout(id);
+}
+
+public sealed class JavaScriptResponse
+{
+    private readonly HttpResponseMessage _response;
+    public JavaScriptResponse(HttpResponseMessage response) => _response = response;
+    public bool ok => _response.IsSuccessStatusCode;
+    public double status => (double)_response.StatusCode;
+    public string text() => _response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+    public object? json() => JavaScriptJson.Instance.parse(text());
 }
 
 public sealed class JavaScriptMath
@@ -55,6 +190,25 @@ public sealed class JavaScriptMath
     public double tan(double value) => Math.Tan(value);
     public double log(double value) => Math.Log(value);
     public double exp(double value) => Math.Exp(value);
+
+    // ES6 Math Methods
+    public double sign(double value) => double.IsNaN(value) ? double.NaN : value == 0 ? value : Math.Sign(value);
+    public double trunc(double value) => Math.Truncate(value);
+    public double cbrt(double value) => Math.Cbrt(value);
+    public double clz32(double value) => System.Numerics.BitOperations.LeadingZeroCount((uint)(int)value);
+    public double log2(double value) => Math.Log2(value);
+    public double log10(double value) => Math.Log10(value);
+    public double log1p(double value) => Math.Log(1 + value);
+    public double expm1(double value) => Math.Exp(value) - 1;
+    public double sinh(double value) => Math.Sinh(value);
+    public double cosh(double value) => Math.Cosh(value);
+    public double tanh(double value) => Math.Tanh(value);
+    public double asinh(double value) => Math.Asinh(value);
+    public double acosh(double value) => Math.Acosh(value);
+    public double atanh(double value) => Math.Atanh(value);
+    public double hypot(double x, double y) => Math.Sqrt(x * x + y * y);
+    public double fround(double value) => (float)value;
+    public double imul(double x, double y) => (int)((uint)(int)x * (uint)(int)y);
 }
 
 public sealed class JavaScriptConsole
@@ -107,7 +261,6 @@ public sealed class JavaScriptConsole
     public void writeLine(object? value) => Out.WriteLine(Format(value));
     public void clear()
     {
-        // Portable no-op: browser console.clear() is advisory, while Console.Clear can fail on redirected/non-interactive hosts.
     }
 
     private static TextWriter Out => CapturedOut.Value ?? Console.Out;
@@ -236,6 +389,37 @@ public sealed class JavaScriptJson
     }
 
     public string stringify(object? value) => JsonSerializer.Serialize(value);
+
+    public object? parse(string text)
+    {
+        using var doc = JsonDocument.Parse(text);
+        return ToElement(doc.RootElement);
+    }
+
+    private static object? ToElement(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.Object => ToDictionary(element),
+            JsonValueKind.Array => element.EnumerateArray().Select(ToElement).ToList(),
+            JsonValueKind.String => element.GetString(),
+            JsonValueKind.Number => element.GetDouble(),
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => null
+        };
+    }
+
+    private static System.Dynamic.ExpandoObject ToDictionary(JsonElement element)
+    {
+        var expando = new System.Dynamic.ExpandoObject();
+        var dict = (IDictionary<string, object?>)expando;
+        foreach (var prop in element.EnumerateObject())
+        {
+            dict[prop.Name] = ToElement(prop.Value);
+        }
+        return expando;
+    }
 }
 
 public sealed class JavaScriptTime

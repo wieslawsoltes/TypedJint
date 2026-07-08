@@ -1,7 +1,10 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.Reflection;
 using System.Text.RegularExpressions;
 using Jint;
+using Acornima;
+using Acornima.Ast;
 
 namespace TypedJint;
 
@@ -150,6 +153,148 @@ public sealed class JavaScriptRuntimeEngine
         {
         }
     }
+
+    public static object? GetProperty(object? target, string member)
+    {
+        if (target is null) return null;
+        var type = target.GetType();
+        var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase;
+        var prop = type.GetProperty(member, flags);
+        if (prop != null) return prop.GetValue(target);
+        var field = type.GetField(member, flags);
+        if (field != null) return field.GetValue(target);
+        if (target is IDictionary<string, object?> dict)
+        {
+            return dict.TryGetValue(member, out var val) ? val : null;
+        }
+        return null;
+    }
+
+    public static object? SetProperty(object? target, string member, object? value)
+    {
+        if (target is null) return null;
+        var type = target.GetType();
+        var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase;
+        var prop = type.GetProperty(member, flags);
+        if (prop != null && prop.CanWrite)
+        {
+            var converted = value == null ? null : Convert.ChangeType(value, prop.PropertyType, CultureInfo.InvariantCulture);
+            prop.SetValue(target, converted);
+            return value;
+        }
+        var field = type.GetField(member, flags);
+        if (field != null)
+        {
+            var converted = value == null ? null : Convert.ChangeType(value, field.FieldType, CultureInfo.InvariantCulture);
+            field.SetValue(target, converted);
+            return value;
+        }
+        if (target is IDictionary<string, object?> dict)
+        {
+            dict[member] = value;
+        }
+        return value;
+    }
+
+    public static object? GetIndex(object? target, object? index)
+    {
+        if (target is null || index is null) return null;
+        if (target is IDictionary<string, object?> dict)
+        {
+            var key = Convert.ToString(index, CultureInfo.InvariantCulture) ?? string.Empty;
+            return dict.TryGetValue(key, out var val) ? val : null;
+        }
+        if (target is System.Collections.IList list)
+        {
+            var idx = Convert.ToInt32(index, CultureInfo.InvariantCulture);
+            if (idx >= 0 && idx < list.Count) return list[idx];
+            return null;
+        }
+        var targetType = target.GetType();
+        var indexer = targetType.GetProperties(BindingFlags.Instance | BindingFlags.Public)
+            .FirstOrDefault(x => x.GetIndexParameters().Length == 1);
+        if (indexer != null)
+        {
+            var paramType = indexer.GetIndexParameters()[0].ParameterType;
+            var convertedIndex = Convert.ChangeType(index, paramType, CultureInfo.InvariantCulture);
+            return indexer.GetValue(target, new[] { convertedIndex });
+        }
+        var propName = Convert.ToString(index, CultureInfo.InvariantCulture) ?? string.Empty;
+        return GetProperty(target, propName);
+    }
+
+    public static object? SetIndex(object? target, object? index, object? value)
+    {
+        if (target is null || index is null) return null;
+        if (target is IDictionary<string, object?> dict)
+        {
+            var key = Convert.ToString(index, CultureInfo.InvariantCulture) ?? string.Empty;
+            dict[key] = value;
+            return value;
+        }
+        if (target is System.Collections.IList list)
+        {
+            var idx = Convert.ToInt32(index, CultureInfo.InvariantCulture);
+            if (idx >= 0 && idx < list.Count)
+            {
+                list[idx] = value;
+            }
+            return value;
+        }
+        var targetType = target.GetType();
+        var indexer = targetType.GetProperties(BindingFlags.Instance | BindingFlags.Public)
+            .FirstOrDefault(x => x.GetIndexParameters().Length == 1 && x.CanWrite);
+        if (indexer != null)
+        {
+            var paramType = indexer.GetIndexParameters()[0].ParameterType;
+            var convertedIndex = Convert.ChangeType(index, paramType, CultureInfo.InvariantCulture);
+            var convertedValue = value == null ? null : Convert.ChangeType(value, indexer.PropertyType, CultureInfo.InvariantCulture);
+            indexer.SetValue(target, convertedValue, new[] { convertedIndex });
+            return value;
+        }
+        var propName = Convert.ToString(index, CultureInfo.InvariantCulture) ?? string.Empty;
+        SetProperty(target, propName, value);
+        return value;
+    }
+
+    public static bool ToBoolean(object? val)
+    {
+        if (val is null) return false;
+        if (val is bool b) return b;
+        if (val is double d) return d != 0 && !double.IsNaN(d);
+        if (val is int i) return i != 0;
+        if (val is string s) return s.Length > 0;
+        return true;
+    }
+
+    public static object? LogicalOr(object? left, object? right)
+    {
+        return ToBoolean(left) ? left : right;
+    }
+
+    public static object? LogicalAnd(object? left, object? right)
+    {
+        return ToBoolean(left) ? right : left;
+    }
+
+    public static object? Coalesce(object? left, object? right)
+    {
+        return left is not null ? left : right;
+    }
+
+    public static object? Add(object? left, object? right)
+    {
+        if (left is string || right is string)
+        {
+            return string.Concat(left, right);
+        }
+        return Convert.ToDouble(left, CultureInfo.InvariantCulture) + Convert.ToDouble(right, CultureInfo.InvariantCulture);
+    }
+
+    public static double Subtract(object? left, object? right) => Convert.ToDouble(left, CultureInfo.InvariantCulture) - Convert.ToDouble(right, CultureInfo.InvariantCulture);
+    public static double Multiply(object? left, object? right) => Convert.ToDouble(left, CultureInfo.InvariantCulture) * Convert.ToDouble(right, CultureInfo.InvariantCulture);
+    public static double Divide(object? left, object? right) => Convert.ToDouble(left, CultureInfo.InvariantCulture) / Convert.ToDouble(right, CultureInfo.InvariantCulture);
+    public static double Modulo(object? left, object? right) => Convert.ToDouble(left, CultureInfo.InvariantCulture) % Convert.ToDouble(right, CultureInfo.InvariantCulture);
 }
 
 public sealed class JavaScriptRuntimeFunction : ICompiledFunction
@@ -223,25 +368,57 @@ public sealed record JavaScriptDeclarationScanResult(
 
 public static class JavaScriptDeclarationScanner
 {
-    private static readonly Regex FunctionRegex = new(@"(?:^|[^A-Za-z0-9_$])(?:async\s+)?function\s*\*?\s+(?<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*\(", RegexOptions.Compiled);
-    private static readonly Regex ClassRegex = new(@"(?:^|[^A-Za-z0-9_$])class\s+(?<name>[A-Za-z_$][A-Za-z0-9_$]*)\b", RegexOptions.Compiled);
-
     public static JavaScriptDeclarationScanResult Scan(string source)
     {
         ArgumentNullException.ThrowIfNull(source);
 
-        var functions = FunctionRegex
-            .Matches(source)
-            .Select(x => x.Groups["name"].Value)
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
+        var parser = new Parser(new ParserOptions { Tolerant = true });
+        Program program;
+        try
+        {
+            program = parser.ParseScript(source);
+        }
+        catch
+        {
+            try
+            {
+                program = parser.ParseModule(source);
+            }
+            catch
+            {
+                return new JavaScriptDeclarationScanResult(Array.Empty<string>(), Array.Empty<string>());
+            }
+        }
 
-        var classes = ClassRegex
-            .Matches(source)
-            .Select(x => x.Groups["name"].Value)
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
+        var visitor = new DeclarationVisitor();
+        visitor.Visit(program);
 
-        return new JavaScriptDeclarationScanResult(functions, classes);
+        return new JavaScriptDeclarationScanResult(
+            visitor.Functions.ToList(),
+            visitor.Classes.ToList());
+    }
+
+    private sealed class DeclarationVisitor : AstVisitor
+    {
+        public HashSet<string> Functions { get; } = new(StringComparer.Ordinal);
+        public HashSet<string> Classes { get; } = new(StringComparer.Ordinal);
+
+        protected override object? VisitFunctionDeclaration(FunctionDeclaration node)
+        {
+            if (node.Id != null && !string.IsNullOrEmpty(node.Id.Name))
+            {
+                Functions.Add(node.Id.Name);
+            }
+            return base.VisitFunctionDeclaration(node);
+        }
+
+        protected override object? VisitClassDeclaration(ClassDeclaration node)
+        {
+            if (node.Id != null && !string.IsNullOrEmpty(node.Id.Name))
+            {
+                Classes.Add(node.Id.Name);
+            }
+            return base.VisitClassDeclaration(node);
+        }
     }
 }

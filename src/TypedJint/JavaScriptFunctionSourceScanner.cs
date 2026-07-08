@@ -1,4 +1,8 @@
-using System.Text.RegularExpressions;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Acornima;
+using Acornima.Ast;
 
 namespace TypedJint;
 
@@ -11,132 +15,90 @@ public sealed record JavaScriptFunctionSource(
 
 public static class JavaScriptFunctionSourceScanner
 {
-    private static readonly Regex FunctionHeaderRegex = new(
-        @"(?<doc>/\*\*[\s\S]*?\*/\s*)?function\s+(?<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*\((?<params>[^)]*)\)\s*\{",
-        RegexOptions.Compiled);
-
     public static IReadOnlyList<JavaScriptFunctionSource> Scan(string source)
     {
         ArgumentNullException.ThrowIfNull(source);
 
         var result = new List<JavaScriptFunctionSource>();
-        var position = 0;
-        while (position < source.Length)
+        try
         {
-            var match = FunctionHeaderRegex.Match(source, position);
-            if (!match.Success)
+            var comments = new List<Comment>();
+            var options = new ParserOptions
             {
-                break;
-            }
+                OnComment = delegate (in Comment comment) { comments.Add(comment); },
+                Tolerant = true
+            };
+            var parser = new Parser(options);
+            var program = parser.ParseScript(source);
 
-            var bodyStart = match.Index + match.Length;
-            var bodyEnd = FindMatchingBrace(source, bodyStart - 1);
-            var functionSource = source.Substring(match.Index, bodyEnd - match.Index + 1);
-            result.Add(new JavaScriptFunctionSource(
-                match.Groups["name"].Value,
-                functionSource,
-                match.Groups["doc"].Success && !string.IsNullOrWhiteSpace(match.Groups["doc"].Value),
-                match.Index,
-                bodyEnd));
-
-            position = bodyEnd + 1;
+            var visitor = new FunctionScannerVisitor(source, comments);
+            visitor.Visit(program);
+            return visitor.Functions;
         }
-
-        return result;
+        catch
+        {
+            return Array.Empty<JavaScriptFunctionSource>();
+        }
     }
 
-    private static int FindMatchingBrace(string source, int openBrace)
+    private sealed class FunctionScannerVisitor : AstVisitor
     {
-        var depth = 0;
-        var inString = false;
-        var inLineComment = false;
-        var inBlockComment = false;
-        var quote = '\0';
+        private readonly string _source;
+        private readonly List<Comment> _comments;
+        public List<JavaScriptFunctionSource> Functions { get; } = new();
 
-        for (var i = openBrace; i < source.Length; i++)
+        public FunctionScannerVisitor(string source, List<Comment> comments)
         {
-            var c = source[i];
-            var next = i + 1 < source.Length ? source[i + 1] : '\0';
-
-            if (inLineComment)
-            {
-                if (c == '\n')
-                {
-                    inLineComment = false;
-                }
-
-                continue;
-            }
-
-            if (inBlockComment)
-            {
-                if (c == '*' && next == '/')
-                {
-                    inBlockComment = false;
-                    i++;
-                }
-
-                continue;
-            }
-
-            if (inString)
-            {
-                if (c == quote && !IsEscaped(source, i))
-                {
-                    inString = false;
-                }
-
-                continue;
-            }
-
-            if (c == '/' && next == '/')
-            {
-                inLineComment = true;
-                i++;
-                continue;
-            }
-
-            if (c == '/' && next == '*')
-            {
-                inBlockComment = true;
-                i++;
-                continue;
-            }
-
-            if (c is '\'' or '"' or '`')
-            {
-                inString = true;
-                quote = c;
-                continue;
-            }
-
-            if (c == '{')
-            {
-                depth++;
-            }
-
-            if (c == '}')
-            {
-                depth--;
-            }
-
-            if (depth == 0)
-            {
-                return i;
-            }
+            _source = source;
+            _comments = comments;
         }
 
-        throw new FormatException("Unterminated function body.");
-    }
-
-    private static bool IsEscaped(string source, int index)
-    {
-        var slashCount = 0;
-        for (var i = index - 1; i >= 0 && source[i] == '\\'; i--)
+        protected override object? VisitFunctionDeclaration(FunctionDeclaration node)
         {
-            slashCount++;
+            var name = node.Id?.Name ?? string.Empty;
+            if (string.IsNullOrEmpty(name))
+            {
+                return base.VisitFunctionDeclaration(node);
+            }
+
+            var jsDoc = FindJSDocForNode(node);
+            var start = jsDoc != null ? jsDoc.Value.Start : node.Range.Start;
+            var end = node.Range.End;
+            var funcSource = _source.Substring(start, end - start);
+
+            Functions.Add(new JavaScriptFunctionSource(
+                name,
+                funcSource,
+                jsDoc != null,
+                start,
+                end));
+
+            return base.VisitFunctionDeclaration(node);
         }
 
-        return slashCount % 2 != 0;
+        private Comment? FindJSDocForNode(Node node)
+        {
+            foreach (var comment in _comments)
+            {
+                var commentText = _source.Substring(comment.ContentRange.Start, comment.ContentRange.End - comment.ContentRange.Start);
+                if (comment.Kind == CommentKind.Block && commentText.StartsWith("*") && comment.End <= node.Start)
+                {
+                    var isAdjacent = true;
+                    for (int i = comment.End; i < node.Start; i++)
+                    {
+                        if (!char.IsWhiteSpace(_source[i]))
+                        {
+                            isAdjacent = false;
+                            break;
+                        }
+                    }
+                    if (isAdjacent)
+                    {
+                        return comment;
+                    }
+                }
+            }
+            return null;
+        }
     }
 }

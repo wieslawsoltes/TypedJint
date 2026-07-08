@@ -82,7 +82,7 @@ public sealed class OptimizedJavaScriptCSharpGeneratorTests
             """);
 
         Assert.Contains("public double sumEven(double limit)", result.PreviewSource, StringComparison.Ordinal);
-        Assert.Contains("public object? createCounter(params object?[] arguments)", result.PreviewSource, StringComparison.Ordinal);
+        Assert.Contains("public object? createCounter()", result.PreviewSource, StringComparison.Ordinal);
         Assert.Contains("public object? Invoke(string functionName", result.PreviewSource, StringComparison.Ordinal);
         Assert.DoesNotContain("private const string Source", result.PreviewSource, StringComparison.Ordinal);
         Assert.DoesNotContain("function createCounter", result.PreviewSource, StringComparison.Ordinal);

@@ -409,9 +409,7 @@ internal static class VerifiedIrPrinter
             case JsExpressionStatement expression:
                 builder.Append(pad).AppendLine(PrintExpression(expression.Expression));
                 break;
-            case JsAssignmentStatement assignment:
-                builder.Append(pad).Append(PrintExpression(assignment.Target)).Append(" = ").AppendLine(PrintExpression(assignment.Value));
-                break;
+
             case JsIfStatement ifStatement:
                 builder.Append(pad).Append("if ").AppendLine(PrintExpression(ifStatement.Test));
                 PrintStatement(builder, ifStatement.Consequent, indent + 1);
@@ -441,7 +439,7 @@ internal static class VerifiedIrPrinter
         {
             null => string.Empty,
             JsVariableStatement variable => "let " + variable.Name + " = " + PrintExpression(variable.Initializer),
-            JsAssignmentStatement assignment => PrintExpression(assignment.Target) + " = " + PrintExpression(assignment.Value),
+
             JsExpressionStatement expression => PrintExpression(expression.Expression),
             _ => statement.GetType().Name
         };
@@ -462,6 +460,7 @@ internal static class VerifiedIrPrinter
             JsBinaryExpression binary => "(" + PrintExpression(binary.Left) + " " + binary.Operator + " " + PrintExpression(binary.Right) + ")",
             JsUnaryExpression unary => "(" + unary.Operator + PrintExpression(unary.Operand) + ")",
             JsUpdateExpression update => update.Prefix ? "(" + update.Operator + PrintExpression(update.Target) + ")" : "(" + PrintExpression(update.Target) + update.Operator + ")",
+            JsAssignmentExpression assign => "(" + PrintExpression(assign.Target) + " " + assign.Operator + " " + PrintExpression(assign.Value) + ")",
             _ => expression.GetType().Name
         };
     }

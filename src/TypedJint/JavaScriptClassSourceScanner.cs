@@ -1,4 +1,8 @@
-using System.Text.RegularExpressions;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Acornima;
+using Acornima.Ast;
 
 namespace TypedJint;
 
@@ -12,134 +16,86 @@ public sealed record JavaScriptClassSource(
 
 public static class JavaScriptClassSourceScanner
 {
-    private static readonly Regex ClassHeaderRegex = new(
-        @"class\s+(?<name>[A-Za-z_$][A-Za-z0-9_$]*)(?:\s+extends\s+(?<base>[A-Za-z_$][A-Za-z0-9_$.]*))?\s*\{",
-        RegexOptions.Compiled);
-
     public static IReadOnlyList<JavaScriptClassSource> Scan(string source)
     {
         ArgumentNullException.ThrowIfNull(source);
 
         var result = new List<JavaScriptClassSource>();
-        var position = 0;
-        while (position < source.Length)
+        try
         {
-            var match = ClassHeaderRegex.Match(source, position);
-            if (!match.Success)
+            var parser = new Parser();
+            var program = parser.ParseScript(source);
+
+            var visitor = new ClassScannerVisitor(source);
+            visitor.Visit(program);
+            return visitor.Classes;
+        }
+        catch
+        {
+            return Array.Empty<JavaScriptClassSource>();
+        }
+    }
+
+    private sealed class ClassScannerVisitor : AstVisitor
+    {
+        private readonly string _source;
+        public List<JavaScriptClassSource> Classes { get; } = new();
+
+        public ClassScannerVisitor(string source)
+        {
+            _source = source;
+        }
+
+        protected override object? VisitClassDeclaration(ClassDeclaration node)
+        {
+            var name = node.Id?.Name ?? string.Empty;
+            if (string.IsNullOrEmpty(name))
             {
-                break;
+                return base.VisitClassDeclaration(node);
             }
 
-            var bodyStart = match.Index + match.Length;
-            var bodyEnd = FindMatchingBrace(source, bodyStart - 1);
-            var body = source[bodyStart..bodyEnd];
-            var classSource = source.Substring(match.Index, bodyEnd - match.Index + 1);
-            result.Add(new JavaScriptClassSource(
-                match.Groups["name"].Value,
-                match.Groups["base"].Success ? match.Groups["base"].Value : null,
+            var baseName = FormatSuperClass(node.SuperClass);
+            var start = node.Range.Start;
+            var end = node.Range.End;
+            var classSource = _source.Substring(start, end - start);
+            
+            // Extract body text inside braces
+            var bodyStart = node.Body.Range.Start + 1;
+            var bodyLength = node.Body.Range.End - node.Body.Range.Start - 2;
+            var body = bodyLength > 0 ? _source.Substring(bodyStart, bodyLength) : string.Empty;
+
+            Classes.Add(new JavaScriptClassSource(
+                name,
+                baseName,
                 classSource,
                 body,
-                match.Index,
-                bodyEnd));
+                start,
+                end));
 
-            position = bodyEnd + 1;
+            return base.VisitClassDeclaration(node);
         }
 
-        return result;
-    }
-
-    internal static int FindMatchingBrace(string source, int openBrace)
-    {
-        var depth = 0;
-        var inString = false;
-        var inLineComment = false;
-        var inBlockComment = false;
-        var quote = '\0';
-
-        for (var i = openBrace; i < source.Length; i++)
+        private static string? FormatSuperClass(Expression? superClass)
         {
-            var c = source[i];
-            var next = i + 1 < source.Length ? source[i + 1] : '\0';
-
-            if (inLineComment)
+            if (superClass == null) return null;
+            return superClass switch
             {
-                if (c == '\n')
-                {
-                    inLineComment = false;
-                }
-
-                continue;
-            }
-
-            if (inBlockComment)
-            {
-                if (c == '*' && next == '/')
-                {
-                    inBlockComment = false;
-                    i++;
-                }
-
-                continue;
-            }
-
-            if (inString)
-            {
-                if (c == quote && !IsEscaped(source, i))
-                {
-                    inString = false;
-                }
-
-                continue;
-            }
-
-            if (c == '/' && next == '/')
-            {
-                inLineComment = true;
-                i++;
-                continue;
-            }
-
-            if (c == '/' && next == '*')
-            {
-                inBlockComment = true;
-                i++;
-                continue;
-            }
-
-            if (c is '\'' or '"' or '`')
-            {
-                inString = true;
-                quote = c;
-                continue;
-            }
-
-            if (c == '{')
-            {
-                depth++;
-            }
-
-            if (c == '}')
-            {
-                depth--;
-            }
-
-            if (depth == 0)
-            {
-                return i;
-            }
+                Identifier id => id.Name,
+                MemberExpression mem => FormatMemberExpression(mem),
+                _ => superClass.ToString()
+            };
         }
 
-        throw new FormatException("Unterminated class body.");
-    }
-
-    private static bool IsEscaped(string source, int index)
-    {
-        var slashCount = 0;
-        for (var i = index - 1; i >= 0 && source[i] == '\\'; i--)
+        private static string FormatMemberExpression(MemberExpression mem)
         {
-            slashCount++;
+            var obj = mem.Object switch
+            {
+                Identifier id => id.Name,
+                MemberExpression nested => FormatMemberExpression(nested),
+                _ => mem.Object.ToString()
+            };
+            var prop = mem.Property is Identifier propId ? propId.Name : mem.Property.ToString();
+            return $"{obj}.{prop}";
         }
-
-        return slashCount % 2 != 0;
     }
 }

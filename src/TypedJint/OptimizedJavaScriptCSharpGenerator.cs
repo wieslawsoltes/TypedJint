@@ -51,6 +51,9 @@ public static class OptimizedJavaScriptCSharpGenerator
         IReadOnlyList<JsFunctionDeclaration> nativeFunctions,
         OptimizedJavaScriptCSharpGenerationOptions options)
     {
+        var classSources = JavaScriptClassSourceScanner.Scan(source);
+        var classPreview = JavaScriptClassCSharpPreviewGenerator.Generate(classSources).TrimEnd();
+
         var builder = CreateHeader(options, emitClassDeclaration: true);
         builder.AppendLine("{");
 
@@ -78,6 +81,13 @@ public static class OptimizedJavaScriptCSharpGenerator
 
         AppendNativeMethods(builder, nativeFunctions, options);
         builder.AppendLine("}");
+
+        if (!string.IsNullOrWhiteSpace(classPreview))
+        {
+            builder.AppendLine();
+            builder.AppendLine(classPreview);
+        }
+
         return builder.ToString();
     }
 
@@ -133,6 +143,7 @@ public static class OptimizedJavaScriptCSharpGenerator
         }
 
         builder.AppendLine("using System;");
+        builder.AppendLine("using System.Collections.Generic;");
         builder.AppendLine("using System.Runtime.CompilerServices;");
         builder.AppendLine("using TypedJint;");
         builder.AppendLine();
@@ -183,11 +194,6 @@ public static class OptimizedJavaScriptCSharpGenerator
         var functions = new List<JsFunctionDeclaration>();
         foreach (var candidate in JavaScriptFunctionSourceScanner.Scan(source))
         {
-            if (!candidate.HasJsDoc)
-            {
-                continue;
-            }
-
             if (TryParseAndCompile(candidate, diagnostics, out var parsed))
             {
                 functions.Add(parsed);
@@ -249,7 +255,11 @@ public static class OptimizedJavaScriptCSharpGenerator
 
             var compileResult = new TypedJsCompiler(
                 globals,
-                new TypedJintOptions { ThrowOnCompilationFailure = false }).Compile(functionSource);
+                new TypedJintOptions
+                {
+                    CompilationMode = TypedCompilationMode.CompileSafeFunctionsOnly,
+                    ThrowOnCompilationFailure = false
+                }).Compile(functionSource);
 
             diagnostics.AddRange(compileResult.Diagnostics.Where(x => x.Severity != TypedDiagnosticSeverity.Warning));
             return compileResult.CompiledFunctions.ContainsKey(functionName);
@@ -266,7 +276,7 @@ public static class OptimizedJavaScriptCSharpGenerator
 
     private static void EmitNativeMethod(StringBuilder builder, JsFunctionDeclaration function, OptimizedJavaScriptCSharpGenerationOptions options)
     {
-        var method = CSharpIntrinsicRewriter.Rewrite(TypedJintTranspiler.TranspileFunctionToCSharp(function))
+        var method = TypedJintTranspiler.TranspileFunctionToCSharp(function)
             .Replace("public static ", "public ", StringComparison.Ordinal)
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Split('\n');

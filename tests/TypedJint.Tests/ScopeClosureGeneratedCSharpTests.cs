@@ -27,7 +27,7 @@ public sealed class ScopeClosureGeneratedCSharpTests
         var execution = GeneratedCSharpCompiler.CreateScriptInstance(generated.Source);
 
         Assert.True(execution.Success, execution.Build.DiagnosticsText + Environment.NewLine + execution.Exception?.Message);
-        Assert.Contains("createCounter", generated.RuntimeFunctions);
+        Assert.Contains("createCounter", generated.NativeFunctions);
         Assert.DoesNotContain(generated.Diagnostics, x => x.Severity == TypedDiagnosticSeverity.Warning);
 
         var output = NormalizeLines(capture.Output.ToString());
@@ -86,7 +86,7 @@ public sealed class ScopeClosureGeneratedCSharpTests
             """);
 
         Assert.Contains("sumEven", generated.NativeFunctions);
-        Assert.Contains("createCounter", generated.RuntimeFunctions);
+        Assert.Contains("createCounter", generated.NativeFunctions);
         Assert.Contains("runDynamic", generated.RuntimeFunctions);
         Assert.DoesNotContain(generated.Diagnostics, x => x.Severity == TypedDiagnosticSeverity.Warning);
 

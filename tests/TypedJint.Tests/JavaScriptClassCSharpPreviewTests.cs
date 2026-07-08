@@ -81,10 +81,10 @@ public sealed class JavaScriptClassCSharpPreviewTests
             """);
 
         Assert.Contains("sumEven", result.NativeFunctions);
-        Assert.Contains("createCounter", result.RuntimeFunctions);
+        Assert.Contains("createCounter", result.NativeFunctions);
         Assert.Contains("runDynamic", result.RuntimeFunctions);
         Assert.Contains("public sealed class Counter", result.PreviewSource, StringComparison.Ordinal);
-        Assert.Contains("public object? createCounter(params object?[] arguments)", result.PreviewSource, StringComparison.Ordinal);
+        Assert.Contains("public object? createCounter()", result.PreviewSource, StringComparison.Ordinal);
         Assert.Contains("public object? runDynamic(params object?[] arguments)", result.PreviewSource, StringComparison.Ordinal);
         Assert.Contains("public double sumEven(double limit)", result.PreviewSource, StringComparison.Ordinal);
         Assert.DoesNotContain("function createCounter", result.PreviewSource, StringComparison.Ordinal);

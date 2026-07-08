@@ -25,7 +25,7 @@ public static class JavaScriptCSharpGenerator
 
         return options.Mode switch
         {
-            JavaScriptCSharpGenerationMode.StaticClass => EnsureSystemUsing(CSharpIntrinsicRewriter.Rewrite(TypedJintTranspiler.TranspileToCSharp(source, options.ClassName))),
+            JavaScriptCSharpGenerationMode.StaticClass => EnsureSystemUsing(TypedJintTranspiler.TranspileToCSharp(source, options.ClassName)),
             JavaScriptCSharpGenerationMode.TopLevelStatements => GenerateTopLevelStatements(source, options),
             JavaScriptCSharpGenerationMode.RuntimeTopLevelStatements => GenerateRuntimeTopLevelStatements(source, options),
             _ => throw new ArgumentOutOfRangeException(nameof(options), options.Mode, null)
@@ -62,20 +62,20 @@ public static class JavaScriptCSharpGenerator
         var functions = SimpleJsParser.ParseFunctions(source);
         foreach (var function in functions)
         {
-            builder.AppendLine(ToLocalFunction(CSharpIntrinsicRewriter.Rewrite(TypedJintTranspiler.TranspileFunctionToCSharp(function))));
+            builder.AppendLine(ToLocalFunction(TypedJintTranspiler.TranspileFunctionToCSharp(function)));
         }
 
         var globalSource = RemoveFunctionDeclarations(source, functions).Trim();
         if (globalSource.Length > 0)
         {
-            var statements = new StatementParser(globalSource).ParseStatements();
+            var statements = SimpleJsParser.ParseStatements(globalSource);
             foreach (var statement in statements)
             {
                 EmitStatement(builder, statement, indent: 0);
             }
         }
 
-        return CSharpIntrinsicRewriter.Rewrite(builder.ToString());
+        return builder.ToString();
     }
 
     private static string GenerateRuntimeTopLevelStatements(string source, JavaScriptCSharpGenerationOptions options)
@@ -186,13 +186,7 @@ public static class JavaScriptCSharpGenerator
                 builder.Append(pad).Append(EmitExpression(expression.Expression)).AppendLine(";");
                 break;
 
-            case JsAssignmentStatement assignment:
-                builder.Append(pad).Append(EmitExpression(assignment.Target)).Append(" = ").Append(EmitExpression(assignment.Value)).AppendLine(";");
-                break;
 
-            case JsCompoundAssignmentStatement assignment:
-                builder.Append(pad).Append(EmitExpression(assignment.Target)).Append(' ').Append(assignment.Operator).Append(' ').Append(EmitExpression(assignment.Value)).AppendLine(";");
-                break;
 
             case JsIfStatement ifStatement:
                 builder.Append(pad).Append("if (").Append(EmitExpression(ifStatement.Test)).AppendLine(")");
@@ -254,8 +248,7 @@ public static class JavaScriptCSharpGenerator
         {
             null => string.Empty,
             JsVariableStatement variable => "var " + SanitizeIdentifier(variable.Name) + " = " + EmitExpression(variable.Initializer),
-            JsAssignmentStatement assignment => EmitExpression(assignment.Target) + " = " + EmitExpression(assignment.Value),
-            JsCompoundAssignmentStatement assignment => EmitExpression(assignment.Target) + " " + assignment.Operator + " " + EmitExpression(assignment.Value),
+
             JsExpressionStatement expression => EmitExpression(expression.Expression),
             _ => statement.GetType().Name
         };
@@ -279,6 +272,7 @@ public static class JavaScriptCSharpGenerator
             JsUpdateExpression update => update.Prefix ? update.Operator + EmitExpression(update.Target) : EmitExpression(update.Target) + update.Operator,
             JsArrayExpression array => "new[] { " + string.Join(", ", array.Elements.Select(EmitExpression)) + " }",
             JsConditionalExpression conditional => "(" + EmitExpression(conditional.Test) + " ? " + EmitExpression(conditional.Consequent) + " : " + EmitExpression(conditional.Alternate) + ")",
+            JsAssignmentExpression assign => EmitExpression(assign.Target) + " " + assign.Operator + " " + EmitExpression(assign.Value),
             _ => expression.GetType().Name
         };
     }
