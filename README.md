@@ -6,7 +6,7 @@ It keeps Jint as the JavaScript semantic runtime, then adds:
 
 - JSDoc-based type annotations
 - safe-function compilation to .NET delegates through expression trees
-- JavaScript-to-C# generation in class, top-level statement, and runtime-compatible modes
+- JavaScript-to-C# generation in class, top-level statement, runtime-compatible, and optimized hybrid modes
 - strongly typed compiled delegate access for low-overhead invocation
 - verified compiler output: semantic signature, delegate signature, normalized IR, C# preview, and diagnostics
 - optional runtime equivalence checks against Jint for pure functions
@@ -131,6 +131,15 @@ Runtime-compatible top-level mode preserves arbitrary JavaScript semantics by em
 ```csharp
 var csharp = JavaScriptCSharpGenerator.GenerateRuntimeTopLevelStatements(source);
 ```
+
+Optimized hybrid class mode emits native C# methods for statically safe functions and keeps a runtime fallback for the rest of the JavaScript program:
+
+```csharp
+var generated = OptimizedJavaScriptCSharpGenerator.Generate(source);
+Console.WriteLine(generated.Source);
+```
+
+The optimized hybrid mode marks native methods with `MethodImplOptions.AggressiveInlining` by default and exposes `Invoke(...)`/`Evaluate(...)` for runtime-backed dynamic JavaScript.
 
 ## JavaScript runtime execution
 
