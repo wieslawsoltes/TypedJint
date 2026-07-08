@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.RegularExpressions;
 
 namespace TypedJint;
 
@@ -18,8 +17,6 @@ public sealed record OptimizedJavaScriptCSharpGenerationResult(
 
 public static class OptimizedJavaScriptCSharpGenerator
 {
-    private static readonly Regex FunctionHeaderRegex = new(@"(?<doc>/\*\*[\s\S]*?\*/\s*)?function\s+(?<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*\((?<params>[^)]*)\)\s*\{", RegexOptions.Compiled);
-
     public static OptimizedJavaScriptCSharpGenerationResult Generate(
         string source,
         OptimizedJavaScriptCSharpGenerationOptions? options = null)
@@ -96,39 +93,56 @@ public static class OptimizedJavaScriptCSharpGenerator
     private static IReadOnlyList<JsFunctionDeclaration> CollectNativeFunctions(string source, List<TypedDiagnostic> diagnostics)
     {
         var functions = new List<JsFunctionDeclaration>();
-        var position = 0;
-        while (position < source.Length)
+        foreach (var candidate in JavaScriptFunctionSourceScanner.Scan(source))
         {
-            var match = FunctionHeaderRegex.Match(source, position);
-            if (!match.Success)
+            if (!candidate.HasJsDoc)
             {
-                break;
+                continue;
             }
 
-            try
+            if (TryParseAndCompile(candidate, diagnostics, out var parsed))
             {
-                var bodyStart = match.Index + match.Length;
-                var bodyEnd = FindMatchingBrace(source, bodyStart - 1);
-                var functionSource = source.Substring(match.Index, bodyEnd - match.Index + 1);
-                var parsed = SimpleJsParser.ParseFunctions(functionSource).SingleOrDefault();
-                if (parsed is not null && IsNativelyCompilable(functionSource, parsed.Name, diagnostics))
-                {
-                    functions.Add(parsed);
-                }
-
-                position = bodyEnd + 1;
-            }
-            catch (Exception ex)
-            {
-                diagnostics.Add(new TypedDiagnostic(
-                    "TJ2001",
-                    TypedDiagnosticSeverity.Warning,
-                    $"Native C# generation skipped function near offset {match.Index}: {ex.Message}"));
-                position = match.Index + match.Length;
+                functions.Add(parsed);
             }
         }
 
         return functions;
+    }
+
+    private static bool TryParseAndCompile(
+        JavaScriptFunctionSource candidate,
+        List<TypedDiagnostic> diagnostics,
+        out JsFunctionDeclaration function)
+    {
+        function = null!;
+        try
+        {
+            var parsed = SimpleJsParser.ParseFunctions(candidate.Source).SingleOrDefault();
+            if (parsed is null)
+            {
+                diagnostics.Add(new TypedDiagnostic(
+                    "TJ2003",
+                    TypedDiagnosticSeverity.Info,
+                    $"Function '{candidate.Name}' was not emitted as native C# because it could not be parsed as a typed function."));
+                return false;
+            }
+
+            if (!IsNativelyCompilable(candidate.Source, parsed.Name, diagnostics))
+            {
+                return false;
+            }
+
+            function = parsed;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            diagnostics.Add(new TypedDiagnostic(
+                "TJ2004",
+                TypedDiagnosticSeverity.Info,
+                $"Function '{candidate.Name}' uses the runtime path because it is outside the native typed subset: {ex.Message}"));
+            return false;
+        }
     }
 
     private static bool IsNativelyCompilable(string functionSource, string functionName, List<TypedDiagnostic> diagnostics)
@@ -149,49 +163,17 @@ public static class OptimizedJavaScriptCSharpGenerator
                 globals,
                 new TypedJintOptions { ThrowOnCompilationFailure = false }).Compile(functionSource);
 
-            diagnostics.AddRange(compileResult.Diagnostics);
+            diagnostics.AddRange(compileResult.Diagnostics.Where(x => x.Severity != TypedDiagnosticSeverity.Warning));
             return compileResult.CompiledFunctions.ContainsKey(functionName);
         }
         catch (Exception ex)
         {
             diagnostics.Add(new TypedDiagnostic(
                 "TJ2002",
-                TypedDiagnosticSeverity.Warning,
-                $"Native C# generation skipped function '{functionName}': {ex.Message}"));
+                TypedDiagnosticSeverity.Info,
+                $"Function '{functionName}' uses the runtime path because it is outside the native typed subset: {ex.Message}"));
             return false;
         }
-    }
-
-    private static int FindMatchingBrace(string source, int openBrace)
-    {
-        var depth = 0;
-        var inString = false;
-        var quote = '\0';
-        for (var i = openBrace; i < source.Length; i++)
-        {
-            var c = source[i];
-            if (inString)
-            {
-                if (c == quote && (i == 0 || source[i - 1] != '\\'))
-                {
-                    inString = false;
-                }
-                continue;
-            }
-
-            if (c is '\'' or '"')
-            {
-                inString = true;
-                quote = c;
-                continue;
-            }
-
-            if (c == '{') depth++;
-            if (c == '}') depth--;
-            if (depth == 0) return i;
-        }
-
-        throw new FormatException("Unterminated function body.");
     }
 
     private static void EmitNativeMethod(StringBuilder builder, JsFunctionDeclaration function, OptimizedJavaScriptCSharpGenerationOptions options)

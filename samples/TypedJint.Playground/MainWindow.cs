@@ -113,12 +113,13 @@ public sealed class MainWindow : Window
             diagnostics.AppendLine();
 
             var generatedRunText = CompileAndRunGeneratedCSharp(generated, diagnostics);
-            var verified = TryExecuteVerified(source, diagnostics);
+            var nativeSource = BuildNativeSource(source, generated.NativeFunctions);
+            var verified = TryExecuteVerified(nativeSource, diagnostics);
             if (verified is not null)
             {
                 _ir.Text = string.Join(Environment.NewLine + Environment.NewLine, verified.CompilerOutputs.Values.Select(x => x.NormalizedIr));
                 var typedEngine = new TypedJintEngine().RegisterStandardLibrary();
-                typedEngine.Execute(source);
+                typedEngine.Execute(nativeSource);
 
                 var resultBuilder = new StringBuilder();
                 resultBuilder.AppendLine(FormatExecutionResult(typedEngine, verified));
@@ -132,7 +133,7 @@ public sealed class MainWindow : Window
             {
                 _ir.Text = generated.NativeFunctions.Count == 0
                     ? "No native typed IR was generated. The source is still represented by runtime-compatible generated C#."
-                    : "Native methods were generated. Verified IR is unavailable because the whole script contains dynamic JavaScript.";
+                    : "Native methods were generated. Native IR verification was skipped.";
 
                 _result.Text = generatedRunText;
             }
@@ -159,18 +160,45 @@ public sealed class MainWindow : Window
         }
     }
 
-    private static VerifiedTypedCompilationResult? TryExecuteVerified(string source, StringBuilder diagnostics)
+    private static string BuildNativeSource(string source, IReadOnlyList<string> nativeFunctions)
     {
+        if (nativeFunctions.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var names = nativeFunctions.ToHashSet(StringComparer.Ordinal);
+        var builder = new StringBuilder();
+        foreach (var function in JavaScriptFunctionSourceScanner.Scan(source))
+        {
+            if (names.Contains(function.Name))
+            {
+                builder.AppendLine(function.Source);
+                builder.AppendLine();
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private static VerifiedTypedCompilationResult? TryExecuteVerified(string nativeSource, StringBuilder diagnostics)
+    {
+        if (string.IsNullOrWhiteSpace(nativeSource))
+        {
+            diagnostics.AppendLine("Native typed verification: no native functions emitted.");
+            diagnostics.AppendLine();
+            return null;
+        }
+
         try
         {
             var engine = new TypedJintEngine().RegisterStandardLibrary();
-            return engine.ExecuteVerified(source, CreateRuntimeCases(source));
+            return engine.ExecuteVerified(nativeSource, CreateRuntimeCases(nativeSource));
         }
         catch (Exception ex)
         {
-            diagnostics.AppendLine("Typed native verification skipped for complete script.");
+            diagnostics.AppendLine("Native typed verification skipped for emitted native functions.");
             diagnostics.AppendLine(ex.GetType().Name + ": " + ex.Message);
-            diagnostics.AppendLine("The playground will execute through generated C# / JavaScriptRuntimeEngine instead of failing.");
             diagnostics.AppendLine();
             return null;
         }

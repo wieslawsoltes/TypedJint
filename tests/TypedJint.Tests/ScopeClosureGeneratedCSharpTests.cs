@@ -28,10 +28,80 @@ public sealed class ScopeClosureGeneratedCSharpTests
 
         Assert.True(execution.Success, execution.Build.DiagnosticsText + Environment.NewLine + execution.Exception?.Message);
         Assert.Contains("createCounter", generated.RuntimeFunctions);
+        Assert.DoesNotContain(generated.Diagnostics, x => x.Severity == TypedDiagnosticSeverity.Warning);
 
         var output = NormalizeLines(capture.Output.ToString());
         Assert.Contains("1", output);
         Assert.Contains("2", output);
+    }
+
+    [Fact]
+    public void MixedNativeAndDynamicScriptHasCleanRuntimeClassification()
+    {
+        var generated = OptimizedJavaScriptCSharpGenerator.Generate(
+            """
+            /**
+             * @param {number} limit
+             * @returns {number}
+             */
+            function sumEven(limit) {
+                let acc = 0;
+                for (let i = 0; i <= limit; i++) {
+                    if (i % 2 === 0) {
+                        acc = acc + i;
+                    }
+                }
+
+                return acc;
+            }
+
+            function createCounter() {
+                let count = 0;
+
+                return function() {
+                    count++;
+                    return count;
+                };
+            }
+
+            const counter = createCounter();
+            console.log(counter());
+            console.log(counter());
+
+            class Counter {
+                constructor(value) {
+                    this.value = value;
+                }
+
+                next() {
+                    return ++this.value;
+                }
+            }
+
+            function runDynamic() {
+                const counter = new Counter(41);
+                console.log("runtime", counter.next());
+                return counter.next();
+            }
+            """);
+
+        Assert.Contains("sumEven", generated.NativeFunctions);
+        Assert.Contains("createCounter", generated.RuntimeFunctions);
+        Assert.Contains("runDynamic", generated.RuntimeFunctions);
+        Assert.DoesNotContain(generated.Diagnostics, x => x.Severity == TypedDiagnosticSeverity.Warning);
+
+        using var capture = JavaScriptConsole.Capture();
+        var execution = GeneratedCSharpCompiler.CreateScriptInstance(generated.Source);
+
+        Assert.True(execution.Success, execution.Build.DiagnosticsText + Environment.NewLine + execution.Exception?.Message);
+        var script = Assert.IsType<GeneratedCSharpScriptInstance>(execution.Instance);
+        Assert.Equal(30.0, Convert.ToDouble(script.InvokeMethod("sumEven", 10.0)));
+        Assert.Equal(43.0, Convert.ToDouble(script.InvokeRuntime("runDynamic")));
+
+        var output = NormalizeLines(capture.Output.ToString());
+        Assert.Contains("1", output);
+        Assert.Contains("2", output);
+        Assert.Contains("runtime 42", output);
     }
 
     [Fact]
