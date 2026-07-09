@@ -5,6 +5,7 @@ using Xunit;
 using Xunit.Abstractions;
 using Jint;
 using TypedJint;
+using TypedJint.Runtime;
 
 namespace TypedJint.Tests;
 
@@ -352,6 +353,114 @@ public class ScratchJintEvaluationTests
                     _output.WriteLine($"Failed to delete temp dir {tempDir}: {ex.Message}");
                 }
             }
+        }
+    }
+
+    [Fact]
+    public void EvaluateLightweightChartsCompiledCSharp()
+    {
+        var domDoc = new DomDocument();
+        JavaScriptRuntimeEngine.CurrentDocument = domDoc;
+        JavaScriptRuntimeEngine.CurrentWindow = new DomWindow(domDoc);
+
+        var runtimeEngine = new JavaScriptRuntimeEngine(new JavaScriptRuntimeOptions
+        {
+            Document = domDoc
+        }).RegisterStandardLibrary();
+        JavaScriptRuntimeEngine.CurrentEngine = runtimeEngine;
+
+        string initScript = """
+        function init() {
+            var container = document.createElement('div');
+            container.style.width = '300px';
+            container.style.height = '200px';
+            container.style.backgroundColor = '#131722';
+            document.body.appendChild(container);
+
+            var chart = LightweightCharts.createChart(container, {
+                width: 300,
+                height: 200,
+                layout: {
+                    backgroundColor: '#131722',
+                    textColor: '#d1d4dc',
+                },
+                grid: {
+                    vertLines: { color: 'rgba(42, 46, 57, 0.5)' },
+                    horzLines: { color: 'rgba(42, 46, 57, 0.5)' },
+                }
+            });
+
+            var lineSeries = chart.addLineSeries({
+                color: 'rgba(4, 111, 232, 1)',
+                lineWidth: 2,
+            });
+
+            lineSeries.setData([
+                { time: '2026-07-01', value: 80.01 },
+                { time: '2026-07-02', value: 96.63 }
+            ]);
+        }
+        """;
+
+        try
+        {
+            var genOptions = new OptimizedJavaScriptCSharpGenerationOptions(EmitRuntimeFallback: false);
+            var generated = OptimizedJavaScriptCSharpGenerator.Generate(initScript, genOptions);
+            _output.WriteLine("Generated C# Source:");
+            _output.WriteLine(generated.Source);
+
+            var buildResult = GeneratedCSharpCompiler.CreateScriptInstance(generated.Source, "ScriptModule");
+            if (!buildResult.Success || buildResult.Instance is null)
+            {
+                _output.WriteLine("Roslyn compilation failed:");
+                _output.WriteLine(buildResult.Build.DiagnosticsText);
+                Assert.Fail("Roslyn compilation failed");
+            }
+
+            var scriptInstance = (GeneratedCSharpScriptInstance)buildResult.Instance;
+            scriptInstance.InvokeMethod("init");
+            _output.WriteLine("SUCCESS: compiled C# init executed successfully!");
+            _output.WriteLine("DOM Tree Structure:");
+            PrintDom(domDoc.body, 0);
+        }
+        catch (Exception ex)
+        {
+            _output.WriteLine("EXCEPTION during compiled C# init execution:");
+            _output.WriteLine(ex.ToString());
+            throw;
+        }
+    }
+
+    private void PrintDom(DomNode node, int indent)
+    {
+        var pad = new string(' ', indent * 2);
+        if (node is DomElement elem)
+        {
+            var styleStr = string.Join("; ", elem.style.width != null ? $"width: {elem.style.width}" : "", elem.style.height != null ? $"height: {elem.style.height}" : "");
+            var widthStr = elem is HTMLCanvasElement canvas ? $" [canvas width={canvas.width} height={canvas.height}]" : "";
+            _output.WriteLine($"{pad}<{elem.tagName} id=\"{elem.id}\" style=\"{styleStr}\">{widthStr}");
+            
+            if (elem is HTMLCanvasElement cv)
+            {
+                var ctx2d = cv.getContext("2d") as CanvasRenderingContext2D;
+                _output.WriteLine($"{pad}  Canvas 2D commands count: {ctx2d?.DrawingContext.Commands.Count ?? 0}");
+                if (ctx2d != null)
+                {
+                    foreach (var cmd in ctx2d.DrawingContext.Commands)
+                    {
+                        _output.WriteLine($"{pad}    Command: {cmd.Type} rect={cmd.Rect} text={cmd.Text}");
+                    }
+                }
+            }
+        }
+        else
+        {
+            _output.WriteLine($"{pad}{node.nodeName}: {node.textContent}");
+        }
+        
+        foreach (var child in node.childNodes)
+        {
+            PrintDom(child, indent + 1);
         }
     }
 }

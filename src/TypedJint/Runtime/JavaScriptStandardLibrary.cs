@@ -11,6 +11,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using TypedJint.Runtime;
+using Jint.Native;
 
 namespace TypedJint;
 
@@ -299,6 +300,7 @@ public static class JavaScriptStandardLibrary
     public static double requestAnimationFrame(object callback)
     {
         var id = Interlocked.Increment(ref _nextRafId);
+        Console.WriteLine($"[requestAnimationFrame] ID: {id}, Callback type: {callback?.GetType().FullName}");
         var cts = new CancellationTokenSource();
         RafCts[id] = cts;
 
@@ -317,6 +319,39 @@ public static class JavaScriptStandardLibrary
                         var now = (DateTime.UtcNow - DateTime.UnixEpoch).TotalMilliseconds;
                         if (callback is Action<double> actionDouble) actionDouble(now);
                         else if (callback is Action action) action();
+                        else if (callback is Delegate del)
+                        {
+                            try
+                            {
+                                var method = del.Method;
+                                var parameters = method.GetParameters();
+                                if (parameters.Length == 1 && (parameters[0].ParameterType == typeof(double) || parameters[0].ParameterType == typeof(float)))
+                                {
+                                    del.DynamicInvoke(now);
+                                }
+                                else if (parameters.Length == 0)
+                                {
+                                    del.DynamicInvoke();
+                                }
+                                else if (parameters.Length == 2 && parameters[0].ParameterType == typeof(JsValue) && parameters[1].ParameterType == typeof(JsValue[]))
+                                {
+                                    var runtime = JavaScriptRuntimeEngine.CurrentEngine;
+                                    var jintEngine = runtime?.Jint;
+                                    var thisVal = jintEngine != null ? JsValue.FromObject(jintEngine, runtime) : JsValue.Undefined;
+                                    var argsVal = jintEngine != null ? new JsValue[] { JsValue.FromObject(jintEngine, now) } : Array.Empty<JsValue>();
+                                    del.DynamicInvoke(thisVal, argsVal);
+                                }
+                                else
+                                {
+                                    try { del.DynamicInvoke(now); }
+                                    catch { del.DynamicInvoke(); }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"[requestAnimationFrame ERROR invoking delegate]: {ex}");
+                            }
+                        }
                         else if (callback is Jint.Native.JsValue jsVal)
                         {
                             var runtime = JavaScriptRuntimeEngine.CurrentEngine;
@@ -326,7 +361,10 @@ public static class JavaScriptStandardLibrary
                                 {
                                     runtime.Jint.Invoke(jsVal, Jint.Native.JsValue.FromObject(runtime.Jint, now));
                                 }
-                                catch {}
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"[requestAnimationFrame ERROR]: {ex}");
+                                }
                             }
                         }
                     });

@@ -94,6 +94,41 @@ public class CanvasRenderingContext2D
     public string lineCap { get => _lineCap; set => _lineCap = value; }
     public string lineJoin { get => _lineJoin; set => _lineJoin = value; }
 
+    private double _globalAlpha = 1.0;
+    private string _globalCompositeOperation = "source-over";
+    private bool _imageSmoothingEnabled = true;
+    private string _shadowColor = "transparent";
+    private double _shadowBlur = 0.0;
+    private double _shadowOffsetX = 0.0;
+    private double _shadowOffsetY = 0.0;
+    private double _lineDashOffset = 0.0;
+    private double[] _lineDash = Array.Empty<double>();
+
+    public double globalAlpha { get => _globalAlpha; set => _globalAlpha = value; }
+    public string globalCompositeOperation { get => _globalCompositeOperation; set => _globalCompositeOperation = value; }
+    public bool imageSmoothingEnabled { get => _imageSmoothingEnabled; set => _imageSmoothingEnabled = value; }
+    public string shadowColor { get => _shadowColor; set => _shadowColor = value; }
+    public double shadowBlur { get => _shadowBlur; set => _shadowBlur = value; }
+    public double shadowOffsetX { get => _shadowOffsetX; set => _shadowOffsetX = value; }
+    public double shadowOffsetY { get => _shadowOffsetY; set => _shadowOffsetY = value; }
+    public double lineDashOffset { get => _lineDashOffset; set => _lineDashOffset = value; }
+    public void setLineDash(object? segments) { }
+    public double[] getLineDash() => _lineDash;
+
+    private string _textAlign = "start";
+    private string _textBaseline = "alphabetic";
+    private string _direction = "inherit";
+    private double _miterLimit = 10.0;
+    private string _filter = "none";
+    private string _imageSmoothingQuality = "low";
+
+    public string textAlign { get => _textAlign; set => _textAlign = value; }
+    public string textBaseline { get => _textBaseline; set => _textBaseline = value; }
+    public string direction { get => _direction; set => _direction = value; }
+    public double miterLimit { get => _miterLimit; set => _miterLimit = value; }
+    public string filter { get => _filter; set => _filter = value; }
+    public string imageSmoothingQuality { get => _imageSmoothingQuality; set => _imageSmoothingQuality = value; }
+
     private void Invalidate()
     {
         Avalonia.Threading.Dispatcher.UIThread.Post(() => _canvas.AvaloniaControl?.InvalidateVisual());
@@ -1070,6 +1105,34 @@ public class AvaloniaCanvasHost : Avalonia.Controls.Control
                     if (segment is ProGPU.Vector.LineSegment line)
                     {
                         ctx.LineTo(new Avalonia.Point(line.Point.X, line.Point.Y));
+                    }
+                    else if (segment is ProGPU.Vector.QuadraticBezierSegment quad)
+                    {
+                        ctx.QuadraticBezierTo(
+                            new Avalonia.Point(quad.ControlPoint.X, quad.ControlPoint.Y),
+                            new Avalonia.Point(quad.Point.X, quad.Point.Y)
+                        );
+                    }
+                    else if (segment is ProGPU.Vector.CubicBezierSegment cubic)
+                    {
+                        ctx.CubicBezierTo(
+                            new Avalonia.Point(cubic.ControlPoint1.X, cubic.ControlPoint1.Y),
+                            new Avalonia.Point(cubic.ControlPoint2.X, cubic.ControlPoint2.Y),
+                            new Avalonia.Point(cubic.Point.X, cubic.Point.Y)
+                        );
+                    }
+                    else if (segment is ProGPU.Vector.ArcSegment arc)
+                    {
+                        var sweep = arc.SweepDirection == ProGPU.Vector.SweepDirection.Clockwise
+                            ? Avalonia.Media.SweepDirection.Clockwise
+                            : Avalonia.Media.SweepDirection.CounterClockwise;
+                        ctx.ArcTo(
+                            new Avalonia.Point(arc.Point.X, arc.Point.Y),
+                            new Avalonia.Size(arc.Size.X, arc.Size.Y),
+                            arc.RotationAngle,
+                            arc.IsLargeArc,
+                            sweep
+                        );
                     }
                 }
                 ctx.EndFigure(figure.IsClosed);
