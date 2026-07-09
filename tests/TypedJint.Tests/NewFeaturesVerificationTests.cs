@@ -763,19 +763,13 @@ public class NewFeaturesVerificationTests
             }
             slnDir = Path.GetDirectoryName(slnDir);
         }
+        Assert.NotNull(slnDir);
         var roughJsPath = Path.Combine(slnDir, "samples", "shared", "rough.js");
         var source = File.ReadAllText(roughJsPath);
         var transpiled = FullJsToCSharpTranspiler.Transpile(source, "Rough");
         
-        // Print the lines containing 'dynamic? c =' to see if and where they are declared
-        var lines = transpiled.Split('\n');
-        for (int i = 0; i < Math.Min(lines.Length, 150); i++)
-        {
-            if (lines[i].Contains("dynamic? c ") || lines[i].Contains("dynamic? u "))
-            {
-                Console.WriteLine($"Line {i+1}: {lines[i]}");
-            }
-        }
+        var buildResult = GeneratedCSharpCompiler.CreateScriptInstance(transpiled, "Rough");
+        Assert.True(buildResult.Success, $"Roslyn compilation failed: {buildResult.Build?.DiagnosticsText}");
     }
 }
 
