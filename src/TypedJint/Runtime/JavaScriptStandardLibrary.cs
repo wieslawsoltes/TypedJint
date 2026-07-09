@@ -11,7 +11,6 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using TypedJint.Runtime;
-using Jint.Native;
 
 namespace TypedJint;
 
@@ -29,6 +28,9 @@ public static class JavaScriptStandardLibraryExtensions
         engine.SetValue("time", JavaScriptTime.Instance);
         engine.SetValue("navigator", new JsNavigator());
         engine.SetValue("performance", new JsPerformance());
+        engine.SetValue("WeakMap", typeof(JsMap));
+        engine.SetValue("Map", typeof(JsMap));
+        engine.SetValue("Set", typeof(JsSet));
 
         // Register DOM/Canvas type constructors
         engine.SetValue("HTMLCanvasElement", typeof(HTMLCanvasElement));
@@ -55,6 +57,7 @@ public static class JavaScriptStandardLibraryExtensions
         engine.SetValue("cancelAnimationFrame", new Action<double>(JavaScriptStandardLibrary.cancelAnimationFrame));
         engine.SetValue("addEventListener", new Action<string, object, object?>(JavaScriptStandardLibrary.addEventListener));
         engine.SetValue("removeEventListener", new Action<string, object, object?>(JavaScriptStandardLibrary.removeEventListener));
+        engine.SetValue("RegExp", new Func<object?, object?, System.Text.RegularExpressions.Regex>(JavaScriptStandardLibrary.CreateRegExp));
 
         return engine;
     }
@@ -70,6 +73,9 @@ public static class JavaScriptStandardLibraryExtensions
         engine.SetValue("time", JavaScriptTime.Instance);
         engine.SetValue("navigator", new JsNavigator());
         engine.SetValue("performance", new JsPerformance());
+        engine.SetValue("WeakMap", typeof(JsMap));
+        engine.SetValue("Map", typeof(JsMap));
+        engine.SetValue("Set", typeof(JsSet));
 
         // Register DOM/Canvas type constructors
         engine.SetValue("HTMLCanvasElement", typeof(HTMLCanvasElement));
@@ -97,40 +103,19 @@ public static class JavaScriptStandardLibraryExtensions
         engine.SetValue("addEventListener", new Action<string, object, object?>(JavaScriptStandardLibrary.addEventListener));
         engine.SetValue("removeEventListener", new Action<string, object, object?>(JavaScriptStandardLibrary.removeEventListener));
 
-        // Load external JS libraries
-        try
-        {
-            var sharedDir = LibraryDownloader.GetSharedDirectory();
-            if (Directory.Exists(sharedDir))
-            {
-                foreach (var file in Directory.GetFiles(sharedDir, "*.js"))
-                {
-                    try
-                    {
-                        var code = File.ReadAllText(file);
-                        engine.Jint.Execute(code);
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"ERROR: Failed to load external JS library file '{Path.GetFileName(file)}': {ex.Message}");
-                    }
-                }
+        // Define standard TypedArrays
+        engine.SetValue("Float32Array", new Func<object?, object>(arg => new Float32Array(arg)));
+        engine.SetValue("Uint16Array", new Func<object?, object>(arg => new Uint16Array(arg)));
+        engine.SetValue("Uint32Array", new Func<object?, object>(arg => new Uint32Array(arg)));
+        engine.SetValue("Int32Array", new Func<object?, object>(arg => new Int32Array(arg)));
+        engine.SetValue("Float64Array", new Func<object?, object>(arg => new Float64Array(arg)));
+        engine.SetValue("Uint8Array", new Func<object?, object>(arg => new Uint8Array(arg)));
+        engine.SetValue("Int16Array", new Func<object?, object>(arg => new Int16Array(arg)));
+        engine.SetValue("Int8Array", new Func<object?, object>(arg => new Int8Array(arg)));
 
-                // If LightweightCharts is registered on window but not globally, copy it
-                try
-                {
-                    engine.Jint.Execute("if (typeof LightweightCharts === 'undefined' && typeof window !== 'undefined' && window.LightweightCharts) { LightweightCharts = window.LightweightCharts; }");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"ERROR: Failed to map window.LightweightCharts to global: {ex.Message}");
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"ERROR: Failed to load external JS libraries: {ex.Message}");
-        }
+        // Define standard CustomEvent
+        engine.SetValue("CustomEvent", new Func<string, object?, object>((type, options) => new CustomEvent(type, options)));
+        engine.SetValue("RegExp", new Func<object?, object?, System.Text.RegularExpressions.Regex>(JavaScriptStandardLibrary.CreateRegExp));
 
         return engine;
     }
@@ -138,6 +123,19 @@ public static class JavaScriptStandardLibraryExtensions
 
 public static class JavaScriptStandardLibrary
 {
+    public static System.Text.RegularExpressions.Regex CreateRegExp(object? pattern, object? flags = null)
+    {
+        var patStr = pattern == null ? "" : Convert.ToString(pattern);
+        var flagsStr = flags == null ? "" : Convert.ToString(flags);
+
+        var options = System.Text.RegularExpressions.RegexOptions.None;
+        if (flagsStr.Contains('i')) options |= System.Text.RegularExpressions.RegexOptions.IgnoreCase;
+        if (flagsStr.Contains('m')) options |= System.Text.RegularExpressions.RegexOptions.Multiline;
+        if (flagsStr.Contains('s')) options |= System.Text.RegularExpressions.RegexOptions.Singleline;
+
+        return new System.Text.RegularExpressions.Regex(patStr, options);
+    }
+
     private static readonly HttpClient Http = new();
     private static int _nextTimerId = 1;
     private static readonly ConcurrentDictionary<int, CancellationTokenSource> ActiveTimers = new();
@@ -222,14 +220,7 @@ public static class JavaScriptStandardLibrary
             {
                 ((dynamic)callback)();
             }
-            catch
-            {
-                if (callback is Jint.Native.JsValue jsVal)
-                {
-                    var runtime = JavaScriptRuntimeEngine.CurrentEngine;
-                    try { runtime?.Jint.Invoke(jsVal); } catch {}
-                }
-            }
+            catch {}
         }), delay);
     }
 
@@ -281,14 +272,7 @@ public static class JavaScriptStandardLibrary
             {
                 ((dynamic)callback)();
             }
-            catch
-            {
-                if (callback is Jint.Native.JsValue jsVal)
-                {
-                    var runtime = JavaScriptRuntimeEngine.CurrentEngine;
-                    try { runtime?.Jint.Invoke(jsVal); } catch {}
-                }
-            }
+            catch {}
         }), delay);
     }
 
@@ -333,14 +317,6 @@ public static class JavaScriptStandardLibrary
                                 {
                                     del.DynamicInvoke();
                                 }
-                                else if (parameters.Length == 2 && parameters[0].ParameterType == typeof(JsValue) && parameters[1].ParameterType == typeof(JsValue[]))
-                                {
-                                    var runtime = JavaScriptRuntimeEngine.CurrentEngine;
-                                    var jintEngine = runtime?.Jint;
-                                    var thisVal = jintEngine != null ? JsValue.FromObject(jintEngine, runtime) : JsValue.Undefined;
-                                    var argsVal = jintEngine != null ? new JsValue[] { JsValue.FromObject(jintEngine, now) } : Array.Empty<JsValue>();
-                                    del.DynamicInvoke(thisVal, argsVal);
-                                }
                                 else
                                 {
                                     try { del.DynamicInvoke(now); }
@@ -350,21 +326,6 @@ public static class JavaScriptStandardLibrary
                             catch (Exception ex)
                             {
                                 Console.WriteLine($"[requestAnimationFrame ERROR invoking delegate]: {ex}");
-                            }
-                        }
-                        else if (callback is Jint.Native.JsValue jsVal)
-                        {
-                            var runtime = JavaScriptRuntimeEngine.CurrentEngine;
-                            if (runtime != null)
-                            {
-                                try
-                                {
-                                    runtime.Jint.Invoke(jsVal, Jint.Native.JsValue.FromObject(runtime.Jint, now));
-                                }
-                                catch (Exception ex)
-                                {
-                                    Console.WriteLine($"[requestAnimationFrame ERROR]: {ex}");
-                                }
                             }
                         }
                     });
