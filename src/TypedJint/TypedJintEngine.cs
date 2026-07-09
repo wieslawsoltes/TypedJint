@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using Jint;
 using TypedJint.Runtime;
 
 namespace TypedJint;
@@ -9,14 +8,12 @@ namespace TypedJint;
 public sealed class TypedJintEngine
 {
     private readonly TypedJintOptions _options;
-    private readonly Engine _jint;
     private readonly ConcurrentDictionary<string, ICompiledFunction> _compiled = new(StringComparer.Ordinal);
     private readonly Dictionary<string, object?> _globals = new(StringComparer.Ordinal);
 
     public TypedJintEngine(TypedJintOptions? options = null)
     {
         _options = options ?? new TypedJintOptions();
-        _jint = new Engine(cfg => cfg.AllowClr());
         Document = new DomDocument();
         RegisterDom(Document);
         if (_options.TypeScriptRegistry != null)
@@ -25,15 +22,14 @@ public sealed class TypedJintEngine
         }
     }
 
-    public Engine Jint => _jint;
     public DomDocument Document { get; }
     public DomWindow Window { get; private set; } = null!;
     public TypeScriptTypeRegistry TypeScriptRegistry { get; } = new();
+    public IReadOnlyDictionary<string, object?> Globals => _globals;
 
     public TypedJintEngine SetValue(string name, object? value)
     {
         _globals[name] = value;
-        _jint.SetValue(name, value);
         return this;
     }
 
@@ -63,12 +59,34 @@ public sealed class TypedJintEngine
             _compiled[function.Key] = function.Value;
         }
 
-        if (_options.ExecuteOriginalSourceInJint)
+        // Compile dynamic/fallback functions using JavaScriptRuntimeEngine
+        try
         {
-            _jint.Execute(source);
+            var runtimeEngine = new JavaScriptRuntimeEngine();
+            foreach (var global in _globals)
+            {
+                runtimeEngine.SetValue(global.Key, global.Value);
+            }
+            var runtimeResult = runtimeEngine.Execute(source);
+            foreach (var fn in runtimeResult.RuntimeFunctions)
+            {
+                if (!_compiled.ContainsKey(fn.Key))
+                {
+                    _compiled[fn.Key] = fn.Value;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[TypedJintEngine] Note: Dynamic fallback compilation: {ex.Message}");
         }
 
         return result;
+    }
+
+    public object? GetValue(string name)
+    {
+        return _globals.TryGetValue(name, out var val) ? val : null;
     }
 
     public object? Invoke(string functionName, params object?[] arguments)
@@ -78,6 +96,6 @@ public sealed class TypedJintEngine
             return compiled.Invoke(arguments);
         }
 
-        return _jint.Invoke(functionName, arguments).ToObject();
+        throw new InvalidOperationException($"Function '{functionName}' is not compiled and Jint fallback is not available.");
     }
 }
