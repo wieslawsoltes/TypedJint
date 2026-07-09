@@ -557,6 +557,37 @@ public class DomElement : DomNode
                     }
                 }
             }
+            else if (string.Equals(name, "display", StringComparison.OrdinalIgnoreCase))
+            {
+                if (AvaloniaControl is Avalonia.Controls.StackPanel sp)
+                {
+                    var isFlex = value?.Contains("flex", StringComparison.OrdinalIgnoreCase) ?? false;
+                    var isInline = value?.Contains("inline", StringComparison.OrdinalIgnoreCase) ?? false;
+                    
+                    if (isFlex || isInline)
+                    {
+                        var dir = style.getPropertyValue("flex-direction") ?? style.getPropertyValue("flexDirection");
+                        var isCol = dir?.Contains("column", StringComparison.OrdinalIgnoreCase) ?? false;
+                        sp.Orientation = isCol ? Avalonia.Layout.Orientation.Vertical : Avalonia.Layout.Orientation.Horizontal;
+                    }
+                    else
+                    {
+                        // table elements, tr, etc., can be handled specifically, but default tr is horizontal
+                        if (!string.Equals(tagName, "tr", StringComparison.OrdinalIgnoreCase))
+                        {
+                            sp.Orientation = Avalonia.Layout.Orientation.Vertical;
+                        }
+                    }
+                }
+            }
+            else if (string.Equals(name, "flex-direction", StringComparison.OrdinalIgnoreCase) || string.Equals(name, "flexDirection", StringComparison.OrdinalIgnoreCase))
+            {
+                if (AvaloniaControl is Avalonia.Controls.StackPanel sp)
+                {
+                    var isCol = value?.Contains("column", StringComparison.OrdinalIgnoreCase) ?? false;
+                    sp.Orientation = isCol ? Avalonia.Layout.Orientation.Vertical : Avalonia.Layout.Orientation.Horizontal;
+                }
+            }
         });
     }
 
@@ -681,6 +712,13 @@ public sealed class DomDocument : DomNode
             element = new DomElement(tagName)
             {
                 AvaloniaControl = new Avalonia.Controls.TextBlock()
+            };
+        }
+        else if (string.Equals(tagName, "tr", StringComparison.OrdinalIgnoreCase))
+        {
+            element = new DomElement(tagName)
+            {
+                AvaloniaControl = new Avalonia.Controls.StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal }
             };
         }
         else
