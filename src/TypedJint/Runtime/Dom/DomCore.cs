@@ -319,6 +319,16 @@ public sealed class CssStyleDeclaration
     public string? color { get => getPropertyValue("color"); set => SetOrRemove("color", value); }
     public string? backgroundColor { get => getPropertyValue("background-color"); set => SetOrRemove("background-color", value); }
     public string? display { get => getPropertyValue("display"); set => SetOrRemove("display", value); }
+    public string? fontSize { get => getPropertyValue("font-size"); set => SetOrRemove("font-size", value); }
+    public string? fontFamily { get => getPropertyValue("font-family"); set => SetOrRemove("font-family", value); }
+    public string? lineHeight { get => getPropertyValue("line-height"); set => SetOrRemove("line-height", value); }
+
+    public string? this[string name]
+    {
+        get => getPropertyValue(name);
+        set => SetOrRemove(name, value);
+    }
+
     public string? getPropertyValue(string name)
     {
         if (_values.TryGetValue(name, out var value))
@@ -329,6 +339,41 @@ public sealed class CssStyleDeclaration
                 return NormalizeColorToRgb(value);
             }
             return value;
+        }
+
+        var normName = name.ToLowerInvariant();
+        switch (normName)
+        {
+            case "font-size":
+            case "fontsize":
+                return "12px";
+            case "font-family":
+            case "fontfamily":
+                return "sans-serif";
+            case "line-height":
+            case "lineheight":
+                return "14px";
+            case "padding":
+            case "padding-top":
+            case "padding-bottom":
+            case "padding-left":
+            case "padding-right":
+                return "0px";
+            case "margin":
+            case "margin-top":
+            case "margin-bottom":
+            case "margin-left":
+            case "margin-right":
+                return "0px";
+            case "border-width":
+            case "border-top-width":
+            case "border-bottom-width":
+            case "border-left-width":
+            case "border-right-width":
+                return "0px";
+            case "box-sizing":
+            case "boxsizing":
+                return "content-box";
         }
         return null;
     }
@@ -433,17 +478,80 @@ public class DomElement : DomNode
     public DomElement? querySelector(string selector) => QuerySelectorAllCore(this, selector).FirstOrDefault();
     public IReadOnlyList<DomElement> querySelectorAll(string selector) => QuerySelectorAllCore(this, selector).ToArray();
 
-    public double clientWidth => (AvaloniaControl?.Bounds.Width) ?? 800.0;
-    public double clientHeight => (AvaloniaControl?.Bounds.Height) ?? 600.0;
+    public double clientWidth
+    {
+        get
+        {
+            if (AvaloniaControl != null)
+            {
+                if (AvaloniaControl.Bounds.Width > 0)
+                {
+                    return AvaloniaControl.Bounds.Width;
+                }
+                if (style != null)
+                {
+                    var w = style.getPropertyValue("width") ?? style.width;
+                    if (!string.IsNullOrWhiteSpace(w))
+                    {
+                        var norm = w.Replace("px", "").Trim();
+                        if (double.TryParse(norm, CultureInfo.InvariantCulture, out var parsed))
+                        {
+                            return parsed;
+                        }
+                    }
+                }
+                if (this is HTMLCanvasElement canvas)
+                {
+                    return canvas.width;
+                }
+                return 0.0;
+            }
+            return 800.0;
+        }
+    }
+
+    public double clientHeight
+    {
+        get
+        {
+            if (AvaloniaControl != null)
+            {
+                if (AvaloniaControl.Bounds.Height > 0)
+                {
+                    return AvaloniaControl.Bounds.Height;
+                }
+                if (style != null)
+                {
+                    var h = style.getPropertyValue("height") ?? style.height;
+                    if (!string.IsNullOrWhiteSpace(h))
+                    {
+                        var norm = h.Replace("px", "").Trim();
+                        if (double.TryParse(norm, CultureInfo.InvariantCulture, out var parsed))
+                        {
+                            return parsed;
+                        }
+                    }
+                }
+                if (this is HTMLCanvasElement canvas)
+                {
+                    return canvas.height;
+                }
+                return 0.0;
+            }
+            return 600.0;
+        }
+    }
 
     public DomRect getBoundingClientRect()
     {
+        var w = clientWidth;
+        var h = clientHeight;
         if (AvaloniaControl != null)
         {
             var bounds = AvaloniaControl.Bounds;
-            return new DomRect(bounds.X, bounds.Y, bounds.Width, bounds.Height);
+            return new DomRect(bounds.X, bounds.Y, w, h);
         }
-        return new DomRect(0, 0, 0, 0);
+        return new DomRect(0, 0, w, h);
     }
 
     public DomRect[] getClientRects()

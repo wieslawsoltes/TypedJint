@@ -384,14 +384,74 @@ public class CanvasRenderingContext2D
 
     public void drawImage(object image, double dx, double dy)
     {
+        if (image is HTMLCanvasElement canvas)
+        {
+            DrawImageCore(image, 0, 0, canvas.width, canvas.height, dx, dy, canvas.width, canvas.height);
+        }
     }
 
     public void drawImage(object image, double dx, double dy, double dw, double dh)
     {
+        if (image is HTMLCanvasElement canvas)
+        {
+            DrawImageCore(image, 0, 0, canvas.width, canvas.height, dx, dy, dw, dh);
+        }
     }
 
     public void drawImage(object image, double sx, double sy, double sw, double sh, double dx, double dy, double dw, double dh)
     {
+        DrawImageCore(image, sx, sy, sw, sh, dx, dy, dw, dh);
+    }
+
+    private void DrawImageCore(object image, double sx, double sy, double sw, double sh, double dx, double dy, double dw, double dh)
+    {
+        if (image is HTMLCanvasElement srcCanvas)
+        {
+            var srcCtx = srcCanvas.getContext("2d") as CanvasRenderingContext2D;
+            if (srcCtx != null)
+            {
+                lock (srcCtx._drawingContext.Commands)
+                lock (_drawingContext.Commands)
+                {
+                    double scaleX = sw > 0 ? dw / sw : 1.0;
+                    double scaleY = sh > 0 ? dh / sh : 1.0;
+
+                    foreach (var cmd in srcCtx._drawingContext.Commands)
+                    {
+                        var copy = new RenderCommand
+                        {
+                            Type = cmd.Type,
+                            Text = cmd.Text,
+                            Brush = cmd.Brush,
+                            Pen = cmd.Pen,
+                            Path = cmd.Path
+                        };
+
+                        if (cmd.Type == RenderCommandType.DrawText)
+                        {
+                            float localX = cmd.Position.X - (float)sx;
+                            float localY = cmd.Position.Y - (float)sy;
+                            float tx = (float)(dx + localX * scaleX);
+                            float ty = (float)(dy + localY * scaleY);
+                            copy.Position = Vector2.Transform(new Vector2(tx, ty), _currentTransform);
+                        }
+                        else
+                        {
+                            float localX = cmd.Rect.X - (float)sx;
+                            float localY = cmd.Rect.Y - (float)sy;
+                            float rx = (float)(dx + localX * scaleX);
+                            float ry = (float)(dy + localY * scaleY);
+                            float rw = (float)(cmd.Rect.Width * scaleX);
+                            float rh = (float)(cmd.Rect.Height * scaleY);
+                            copy.Rect = new Rect(rx, ry, rw, rh);
+                        }
+
+                        _drawingContext.Commands.Add(copy);
+                    }
+                }
+                Invalidate();
+            }
+        }
     }
 
     public void clip() => clip(null, null);
