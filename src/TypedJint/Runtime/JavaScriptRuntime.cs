@@ -1,19 +1,248 @@
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
-using System.Linq;
-using System.Text.RegularExpressions;
-using Jint;
-using Jint.Native;
+using System.Reflection;
 
 namespace TypedJint.Runtime;
 
 public static class JavaScriptRuntime
 {
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, object> ObjectPrototypes = new();
+    private static readonly Dictionary<Type, object> ClassPrototypes = new();
+
+    public static object? GetPrototype(object? obj)
+    {
+        if (obj is null) return null;
+        if (obj is Type t)
+        {
+            if (!ClassPrototypes.TryGetValue(t, out var p))
+            {
+                p = new System.Dynamic.ExpandoObject();
+                ClassPrototypes[t] = p;
+            }
+            return p;
+        }
+
+        if (obj is Delegate del)
+        {
+            var extraVal = GetExtraProperty(del, "prototype", out var found);
+            if (found && extraVal != null) return extraVal;
+
+            if (!ObjectPrototypes.TryGetValue(del, out var p))
+            {
+                p = new System.Dynamic.ExpandoObject();
+                ObjectPrototypes.AddOrUpdate(del, p);
+            }
+            return p;
+        }
+
+        if (obj is IDictionary<string, object?> dict)
+        {
+            if (dict.TryGetValue("__proto__", out var p)) return p;
+        }
+        if (ObjectPrototypes.TryGetValue(obj, out var proto)) return proto;
+        return GetPrototype(obj.GetType());
+    }
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, Dictionary<string, object?>> ExtraProperties = new();
+
+    public static object? SetExtraProperty(object obj, string member, object? value)
+    {
+        var dict = ExtraProperties.GetOrCreateValue(obj);
+        dict[member] = value;
+        return value;
+    }
+
+    public static object? GetExtraProperty(object obj, string member, out bool found)
+    {
+        if (ExtraProperties.TryGetValue(obj, out var dict))
+        {
+            if (dict.TryGetValue(member, out var val))
+            {
+                found = true;
+                return val;
+            }
+        }
+        found = false;
+        return null;
+    }
+
+    public static IReadOnlyDictionary<string, object?>? GetExtraProperties(object obj)
+    {
+        if (ExtraProperties.TryGetValue(obj, out var dict))
+        {
+            return dict;
+        }
+        return null;
+    }
+
+    public static Func<object?[], object?> CreateDelegate(object target, string methodName)
+    {
+        var method = target.GetType().GetMethod(methodName) ?? throw new MissingMethodException(target.GetType().FullName, methodName);
+        var parameters = method.GetParameters();
+        
+        var argsParam = System.Linq.Expressions.Expression.Parameter(typeof(object?[]), "args");
+        var argExpressions = new System.Linq.Expressions.Expression[parameters.Length];
+        
+        var convertMethod = typeof(CompiledFunction).GetMethod(nameof(CompiledFunction.ConvertArgument), BindingFlags.Public | BindingFlags.Static)!;
+        
+        for (int i = 0; i < parameters.Length; i++)
+        {
+            var indexExpr = System.Linq.Expressions.Expression.ArrayIndex(argsParam, System.Linq.Expressions.Expression.Constant(i));
+            var fallbackVal = System.Linq.Expressions.Expression.Default(parameters[i].ParameterType);
+            
+            var actualVal = System.Linq.Expressions.Expression.Convert(
+                System.Linq.Expressions.Expression.Call(convertMethod, indexExpr, System.Linq.Expressions.Expression.Constant(parameters[i].ParameterType)),
+                parameters[i].ParameterType
+            );
+
+            var conditionExpr = System.Linq.Expressions.Expression.Condition(
+                System.Linq.Expressions.Expression.LessThan(System.Linq.Expressions.Expression.Constant(i), System.Linq.Expressions.Expression.ArrayLength(argsParam)),
+                actualVal,
+                fallbackVal
+            );
+            argExpressions[i] = conditionExpr;
+        }
+
+        var callExpr = method.IsStatic 
+            ? System.Linq.Expressions.Expression.Call(null, method, argExpressions)
+            : System.Linq.Expressions.Expression.Call(System.Linq.Expressions.Expression.Constant(target), method, argExpressions);
+        
+        System.Linq.Expressions.Expression bodyExpr = method.ReturnType == typeof(void)
+            ? System.Linq.Expressions.Expression.Block(callExpr, System.Linq.Expressions.Expression.Constant(null, typeof(object)))
+            : System.Linq.Expressions.Expression.Convert(callExpr, typeof(object));
+
+        var lambda = System.Linq.Expressions.Expression.Lambda<Func<object?[], object?>>(bodyExpr, argsParam);
+        return lambda.Compile();
+    }
+
+    public static bool HasPrototype(object obj)
+    {
+        if (obj is null) return false;
+        if (obj is Type t) return ClassPrototypes.ContainsKey(t);
+        if (obj is IDictionary<string, object?> dict) return dict.ContainsKey("__proto__");
+        return ObjectPrototypes.TryGetValue(obj, out _);
+    }
+
+    public static void SetPrototype(object obj, object proto)
+    {
+        if (obj is null) return;
+        if (obj is Type t)
+        {
+            ClassPrototypes[t] = proto;
+            return;
+        }
+        if (obj is IDictionary<string, object?> dict)
+        {
+            dict["__proto__"] = proto;
+            return;
+        }
+        ObjectPrototypes.AddOrUpdate(obj, proto);
+    }
+
+    public static object? FindInPrototypeChain(object? target, string name, out object? prototypeOwner)
+    {
+        prototypeOwner = null;
+        if (target is null) return null;
+        
+        var current = GetPrototype(target);
+        Console.WriteLine($"[FindInPrototypeChain Debug] target: '{target.GetType().Name}', name: '{name}', start prototype is null? {current == null}");
+        while (current != null)
+        {
+            if (current is IDictionary<string, object?> dict)
+            {
+                Console.WriteLine($"  Checking prototype keys: {string.Join(", ", dict.Keys)}");
+                if (dict.TryGetValue(name, out var val) && val != null)
+                {
+                    prototypeOwner = current;
+                    Console.WriteLine($"  Found '{name}' on prototype!");
+                    return val;
+                }
+                if (dict.TryGetValue("__proto__", out var next) && next != current)
+                {
+                    Console.WriteLine($"  Following __proto__ to next prototype");
+                    current = next;
+                }
+                else
+                {
+                    break;
+                }
+            }
+            else
+            {
+                break;
+            }
+        }
+        Console.WriteLine($"  '{name}' NOT found in prototype chain!");
+        return null;
+    }
+
     public static dynamic GetPrototype(string className)
     {
-        return JavaScriptRuntimeEngine.CurrentEngine.Jint.GetValue(className).Get("prototype").ToObject();
+        Console.WriteLine($"[GetPrototype Debug] className: '{className}'");
+        var flags = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase;
+        
+        var assemblies = AppDomain.CurrentDomain.GetAssemblies()
+            .OrderByDescending(asm => asm.GetName().Name?.StartsWith("TypedJint.GeneratedScript") == true);
+            
+        foreach (var asm in assemblies)
+        {
+            var asmName = asm.GetName().Name;
+            if (asmName != null && (asmName.StartsWith("System.") || asmName.StartsWith("Microsoft.") || asmName == "mscorlib" || asmName == "netstandard"))
+            {
+                continue;
+            }
+
+            var type = asm.GetType(className) ?? asm.GetType("ThreeLibraryModule+" + className) ?? asm.GetType("RoughLibraryModule+" + className) ?? asm.GetType("PixiLibraryModule+" + className) ?? asm.GetType("D3LibraryModule+" + className) ?? asm.GetType("LightweightChartsLibraryModule+" + className);
+            if (type != null)
+            {
+                Console.WriteLine($"  Found Type in Assembly '{asmName}': '{type.FullName}'");
+                return GetPrototype(type);
+            }
+
+            Type[] types;
+            try
+            {
+                types = asm.GetTypes();
+            }
+            catch (ReflectionTypeLoadException ex)
+            {
+                types = ex.Types.Where(t => t != null).ToArray()!;
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (var t in types)
+            {
+                var prop = t.GetProperty(className, flags);
+                if (prop != null)
+                {
+                    var val = prop.GetValue(null);
+                    Console.WriteLine($"  Found Static Property '{className}' on Type '{t.FullName}' in Assembly '{asmName}', value is null? {val == null}");
+                    if (val != null) return GetPrototype(val);
+                }
+                var field = t.GetField(className, flags);
+                if (field != null)
+                {
+                    var val = field.GetValue(null);
+                    Console.WriteLine($"  Found Static Field '{className}' on Type '{t.FullName}' in Assembly '{asmName}', value is null? {val == null}");
+                    if (val != null) return GetPrototype(val);
+                }
+            }
+        }
+
+        var globalObj = GetGlobal(className);
+        if (globalObj != null)
+        {
+            return GetPrototype(globalObj);
+        }
+        Console.WriteLine($"  Prototype for constructor '{className}' NOT found!");
+        return null;
     }
 
     public static object? GetConstructor(object? obj)
@@ -37,6 +266,73 @@ public static class JavaScriptRuntime
         if (args.Length == 0) return double.PositiveInfinity;
         return args.Select(Convert.ToDouble).Min();
     }
+
+    public static double ToNumber(object? val)
+    {
+        if (val == null) return 0.0;
+        if (val is double d) return d;
+        if (val is float f) return f;
+        if (val is int i) return i;
+        if (val is long l) return l;
+        if (val is decimal dec) return (double)dec;
+        if (val is bool b) return b ? 1.0 : 0.0;
+        if (val is string s)
+        {
+            if (double.TryParse(s, System.Globalization.CultureInfo.InvariantCulture, out var res)) return res;
+            return double.NaN;
+        }
+        return double.NaN;
+    }
+
+    public static dynamic? GetGlobal(string name)
+    {
+        var currentEngine = JavaScriptRuntimeEngine.CurrentEngine;
+        if (currentEngine != null)
+        {
+            var val = currentEngine.GetValue(name);
+            if (val != null) return val;
+        }
+
+        var window = JavaScriptRuntimeEngine.CurrentWindow;
+        if (window != null)
+        {
+            var winVal = JavaScriptRuntimeEngine.GetProperty(window, name);
+            if (winVal != null) return winVal;
+        }
+
+        return null;
+    }
+
+    public static object? SetGlobal(string name, object? value)
+    {
+        var currentEngine = JavaScriptRuntimeEngine.CurrentEngine;
+        if (currentEngine != null)
+        {
+            currentEngine.SetValue(name, value);
+        }
+        var window = JavaScriptRuntimeEngine.CurrentWindow;
+        if (window != null)
+        {
+            JavaScriptRuntimeEngine.SetProperty(window, name, value);
+        }
+        return value;
+    }
+
+    public static double Abs(object? val) => Math.Abs(ToNumber(val));
+    public static double Acos(object? val) => Math.Acos(ToNumber(val));
+    public static double Asin(object? val) => Math.Asin(ToNumber(val));
+    public static double Atan(object? val) => Math.Atan(ToNumber(val));
+    public static double Cos(object? val) => Math.Cos(ToNumber(val));
+    public static double Sin(object? val) => Math.Sin(ToNumber(val));
+    public static double Tan(object? val) => Math.Tan(ToNumber(val));
+    public static double Exp(object? val) => Math.Exp(ToNumber(val));
+    public static double Log(object? val) => Math.Log(ToNumber(val));
+    public static double Sqrt(object? val) => Math.Sqrt(ToNumber(val));
+    public static double Floor(object? val) => Math.Floor(ToNumber(val));
+    public static double Ceiling(object? val) => Math.Ceiling(ToNumber(val));
+    public static double Round(object? val) => Math.Round(ToNumber(val));
+    public static double Atan2(object? y, object? x) => Math.Atan2(ToNumber(y), ToNumber(x));
+    public static double Pow(object? x, object? y) => Math.Pow(ToNumber(x), ToNumber(y));
 
     public static dynamic? PostIncrementProperty(object? obj, object? prop)
     {
@@ -76,33 +372,33 @@ public static class JavaScriptRuntime
 
     public static dynamic? PostIncrementGlobal(string name)
     {
-        var val = JavaScriptRuntimeEngine.CurrentEngine.Jint.GetValue(name).ToObject();
+        var val = GetGlobal(name);
         var num = val == null ? 0 : Convert.ToDouble(val);
-        JavaScriptRuntimeEngine.CurrentEngine.Jint.SetValue(name, num + 1);
+        SetGlobal(name, num + 1);
         return num;
     }
 
     public static dynamic? PostDecrementGlobal(string name)
     {
-        var val = JavaScriptRuntimeEngine.CurrentEngine.Jint.GetValue(name).ToObject();
+        var val = GetGlobal(name);
         var num = val == null ? 0 : Convert.ToDouble(val);
-        JavaScriptRuntimeEngine.CurrentEngine.Jint.SetValue(name, num - 1);
+        SetGlobal(name, num - 1);
         return num;
     }
 
     public static dynamic? PreIncrementGlobal(string name)
     {
-        var val = JavaScriptRuntimeEngine.CurrentEngine.Jint.GetValue(name).ToObject();
+        var val = GetGlobal(name);
         var num = (val == null ? 0 : Convert.ToDouble(val)) + 1;
-        JavaScriptRuntimeEngine.CurrentEngine.Jint.SetValue(name, num);
+        SetGlobal(name, num);
         return num;
     }
 
     public static dynamic? PreDecrementGlobal(string name)
     {
-        var val = JavaScriptRuntimeEngine.CurrentEngine.Jint.GetValue(name).ToObject();
+        var val = GetGlobal(name);
         var num = (val == null ? 0 : Convert.ToDouble(val)) - 1;
-        JavaScriptRuntimeEngine.CurrentEngine.Jint.SetValue(name, num);
+        SetGlobal(name, num);
         return num;
     }
 
@@ -206,36 +502,99 @@ public static class JavaScriptRuntime
 
     public static dynamic CreateNewInstance(dynamic? constructor, params object?[] args)
     {
-        if (constructor == null) return null;
+        args = args ?? System.Array.Empty<object?>();
+        Console.WriteLine($"[CreateNewInstance Debug] constructor type: {constructor?.GetType().FullName}, value: {constructor}");
+        if (constructor == null)
+        {
+            Console.WriteLine($"[CreateNewInstance Debug] constructor is null! args count: {args.Length}");
+            Console.WriteLine(Environment.StackTrace);
+            throw new ArgumentException("constructor is null");
+        }
+        
+        if (constructor != null && constructor.GetType().FullName.Contains("DelegateWrapper"))
+        {
+            var field = constructor.GetType().GetField("_d", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            if (field != null)
+            {
+                var delVal = field.GetValue(constructor);
+                if (delVal != null)
+                {
+                    constructor = delVal;
+                }
+            }
+        }
+
         if (constructor is Type t)
         {
-            return Activator.CreateInstance(t, args);
-        }
-        if (constructor is JsValue jsVal)
-        {
-            var engine = JavaScriptRuntimeEngine.CurrentEngine?.Jint;
-            if (engine is not null)
+            var constructors = t.GetConstructors(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+            System.Reflection.ConstructorInfo? bestCtor = null;
+            object?[]? paddedArgs = null;
+            
+            foreach (var ctor in constructors)
             {
-                var jsArgs = new JsValue[args.Length];
-                for (int i = 0; i < args.Length; i++)
+                var parameters = ctor.GetParameters();
+                if (args.Length <= parameters.Length)
                 {
-                    jsArgs[i] = JsValue.FromObject(engine, args[i]);
+                    var tempArgs = new object?[parameters.Length];
+                    for (int i = 0; i < parameters.Length; i++)
+                    {
+                        if (i < args.Length)
+                        {
+                            tempArgs[i] = args[i];
+                        }
+                        else
+                        {
+                            if (parameters[i].HasDefaultValue)
+                            {
+                                tempArgs[i] = parameters[i].DefaultValue;
+                            }
+                            else
+                            {
+                                tempArgs[i] = null;
+                            }
+                        }
+                    }
+                    bestCtor = ctor;
+                    paddedArgs = tempArgs;
+                    break;
                 }
-                var constructed = engine.Construct(jsVal, jsArgs);
-                return TypedJint.JavaScriptRuntimeEngine.UnwrapJsValue(constructed);
             }
+            if (bestCtor != null)
+            {
+                return bestCtor.Invoke(paddedArgs);
+            }
+            return Activator.CreateInstance(t, args);
         }
         if (constructor is Delegate del)
         {
-            var parameters = del.Method.GetParameters();
-            var invokeArgs = new object?[parameters.Length];
-            for (int i = 0; i < invokeArgs.Length; i++)
+            var newObj = new System.Dynamic.ExpandoObject();
+            var proto = GetPrototype(del);
+            if (proto != null)
             {
-                if (i < args.Length) invokeArgs[i] = args[i];
-                else invokeArgs[i] = null;
+                SetPrototype(newObj, proto);
             }
-            var result = del.DynamicInvoke(invokeArgs);
-            return result ?? new System.Dynamic.ExpandoObject();
+            var prevThis = JavaScriptRuntimeEngine.CurrentThis;
+            JavaScriptRuntimeEngine.CurrentThis = newObj;
+            try
+            {
+                var parameters = del.Method.GetParameters();
+                var invokeArgs = new object?[parameters.Length];
+                for (int i = 0; i < invokeArgs.Length; i++)
+                {
+                    if (i < args.Length) invokeArgs[i] = args[i];
+                    else invokeArgs[i] = null;
+                }
+                var result = del.DynamicInvoke(invokeArgs);
+                if (result != null && result.GetType().IsClass && result is not string)
+                {
+                    return result;
+                }
+                return result ?? newObj;
+            }
+            finally
+            {
+                JavaScriptRuntimeEngine.CurrentThis = prevThis;
+            }
         }
         return new System.Dynamic.ExpandoObject();
     }
@@ -257,7 +616,7 @@ public static class JavaScriptRuntime
         if (obj is System.Dynamic.ExpandoObject expando)
         {
             var dict = (IDictionary<string, object?>)expando;
-            var key = Convert.ToString(prop);
+            var key = prop == null ? "undefined" : Convert.ToString(prop) ?? "undefined";
             object? val;
             return dict.TryGetValue(key, out val) ? val : null;
         }
@@ -275,7 +634,7 @@ public static class JavaScriptRuntime
         if (obj is System.Dynamic.ExpandoObject expando)
         {
             var dict = (IDictionary<string, object?>)expando;
-            var key = Convert.ToString(prop);
+            var key = prop == null ? "undefined" : Convert.ToString(prop) ?? "undefined";
             dict[key] = value;
             return value;
         }
@@ -303,11 +662,11 @@ public static class JavaScriptRuntime
 
     public static string GetTypeString(dynamic? val)
     {
-        if (val == null) return "object";
+        if (val == null) return "undefined";
         if (val is string) return "string";
         if (val is bool) return "boolean";
         if (val is double || val is float || val is int || val is long) return "number";
-        if (val is Delegate || val is MulticastDelegate) return "dynamic";
+        if (val is Delegate || val is MulticastDelegate) return "function";
         return "object";
     }
 
@@ -378,9 +737,11 @@ public static class JavaScriptRuntime
         ("assign", (AssignDelegate)JsObject.assign),
         ("freeze", (Func<dynamic, dynamic>)JsObject.freeze),
         ("defineProperty", (Func<dynamic, object?, dynamic, dynamic>)JsObject.defineProperty),
+        ("defineProperties", (Func<dynamic, dynamic, dynamic>)JsObject.defineProperties),
         ("getOwnPropertySymbols", (Func<dynamic, dynamic>)JsObject.getOwnPropertySymbols),
         ("setPrototypeOf", (Func<dynamic, dynamic, dynamic>)JsObject.setPrototypeOf),
-        ("create", (Func<dynamic, dynamic>)JsObject.create)
+        ("create", (Func<dynamic, dynamic>)JsObject.create),
+        ("keys", (Func<dynamic?, dynamic>)JsObject.keys)
     );
     public static dynamic _Number { get; } = new NumberClass();
     public static dynamic _Function { get; } = typeof(Delegate);
@@ -390,6 +751,118 @@ public static class JavaScriptRuntime
         uint l = left == null ? 0 : (uint)Convert.ChangeType(left, typeof(uint));
         int r = right == null ? 0 : (int)Convert.ChangeType(right, typeof(int));
         return (dynamic)(l >> r);
+    }
+
+    public static bool AreStrictEqual(object? a, object? b)
+    {
+        if (ReferenceEquals(a, b)) return true;
+        if (a is null || b is null) return false;
+        
+        if (IsNumeric(a) && IsNumeric(b))
+        {
+            return Convert.ToDouble(a) == Convert.ToDouble(b);
+        }
+        
+        if (a.GetType() != b.GetType()) return false;
+        
+        if (a is string strA && b is string strB)
+        {
+            return strA == strB;
+        }
+        
+        if (a is bool boolA && b is bool boolB)
+        {
+            return boolA == boolB;
+        }
+        
+        return false;
+    }
+
+    public static bool AreEqual(object? a, object? b)
+    {
+        if (ReferenceEquals(a, b)) return true;
+        if (a is null || b is null)
+        {
+            return a == null && b == null;
+        }
+        
+        if (IsNumeric(a) && IsNumeric(b))
+        {
+            return Convert.ToDouble(a) == Convert.ToDouble(b);
+        }
+        
+        if (a is string || IsNumeric(a) || a is bool)
+        {
+            if (b is string || IsNumeric(b) || b is bool)
+            {
+                if (a is bool boolA) return AreEqual(boolA ? 1.0 : 0.0, b);
+                if (b is bool boolB) return AreEqual(a, boolB ? 1.0 : 0.0);
+                if (a is string strA && b is string strB) return strA == strB;
+                try
+                {
+                    return Convert.ToDouble(a) == Convert.ToDouble(b);
+                }
+                catch
+                {
+                    return Convert.ToString(a) == Convert.ToString(b);
+                }
+            }
+        }
+        
+        return a.Equals(b);
+    }
+    
+    private static bool IsNumeric(object? value)
+    {
+        return value is sbyte || value is byte || value is short || value is ushort ||
+               value is int || value is uint || value is long || value is ulong ||
+               value is float || value is double || value is decimal;
+    }
+
+    public static System.Collections.IEnumerable GetEnumerable(object? obj)
+    {
+        if (obj == null) yield break;
+        if (obj is System.Collections.IEnumerable enumerable && !(obj is string))
+        {
+            foreach (var item in enumerable)
+            {
+                yield return item;
+            }
+        }
+        else if (obj is string str)
+        {
+            foreach (var c in str)
+            {
+                yield return c.ToString();
+            }
+        }
+    }
+
+    public static System.Collections.IEnumerable GetKeys(object? obj)
+    {
+        if (obj == null) yield break;
+        if (obj is System.Dynamic.ExpandoObject expando)
+        {
+            foreach (var key in ((System.Collections.Generic.IDictionary<string, object?>)expando).Keys)
+            {
+                yield return key;
+            }
+        }
+        else if (obj is System.Collections.Generic.IDictionary<string, object?> dict)
+        {
+            foreach (var key in dict.Keys)
+            {
+                yield return key;
+            }
+        }
+        else
+        {
+            var properties = obj.GetType().GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+            foreach (var prop in properties)
+            {
+                yield return prop.Name;
+            }
+        }
     }
 }
 
@@ -422,9 +895,20 @@ public static class JsObject
     public static dynamic? prototype { get; set; } = new System.Dynamic.ExpandoObject();
     public static dynamic freeze { get; } = new Func<dynamic, dynamic>((obj) => obj);
     public static dynamic defineProperty { get; } = new Func<dynamic, object?, dynamic, dynamic>((obj, prop, desc) => obj);
+    public static dynamic defineProperties { get; } = new Func<dynamic, dynamic, dynamic>((obj, props) => obj);
     public static dynamic getOwnPropertySymbols { get; } = new Func<dynamic, dynamic>((obj) => new List<dynamic?>());
-    public static dynamic setPrototypeOf { get; } = new Func<dynamic, dynamic, dynamic>((obj, proto) => obj);
-    public static dynamic create { get; } = new Func<dynamic, dynamic>((proto) => new System.Dynamic.ExpandoObject());
+    public static dynamic setPrototypeOf { get; } = new Func<dynamic, dynamic, dynamic>((obj, proto) => {
+        JavaScriptRuntime.SetPrototype(obj, proto);
+        return obj;
+    });
+    public static dynamic create { get; } = new Func<dynamic, dynamic>((proto) => {
+        var obj = new System.Dynamic.ExpandoObject();
+        if (proto != null)
+        {
+            JavaScriptRuntime.SetPrototype(obj, proto);
+        }
+        return obj;
+    });
     public static AssignDelegate assign { get; } = (target, sources) =>
     {
         var targetDict = (IDictionary<string, object?>)target;
@@ -441,12 +925,52 @@ public static class JsObject
         }
         return target;
     };
+    public static dynamic keys { get; } = new Func<dynamic?, dynamic>((obj) => {
+        if (obj == null) return new JsArray();
+        var list = new JsArray();
+        if (obj is IDictionary<string, object?> dict)
+        {
+            foreach (var key in dict.Keys)
+            {
+                if (key != "__proto__")
+                {
+                    list.Add(key);
+                }
+            }
+            return list;
+        }
+        
+        var type = obj.GetType();
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public;
+        foreach (var prop in type.GetProperties(flags))
+        {
+            list.Add(prop.Name);
+        }
+        foreach (var field in type.GetFields(flags))
+        {
+            list.Add(field.Name);
+        }
+        return list;
+    });
 }
 
 public class ArrayClass
 {
     public dynamic from(dynamic? obj) => JsArray.from(obj);
-    public bool isArray(dynamic? obj) => obj is System.Collections.IList;
+    public bool isArray(dynamic? obj)
+    {
+        if (obj is null) return false;
+        if (obj is TypedJint.JsTypedArrayWrapper)
+        {
+            return false;
+        }
+        var typeName = obj.GetType().FullName ?? "";
+        if (typeName.Contains("TypedArray"))
+        {
+            return false;
+        }
+        return obj is System.Collections.IList;
+    }
 }
 
 public class NumberClass
@@ -557,7 +1081,7 @@ public class JsPerformance
 
 public class JsJson
 {
-    public static string stringify(dynamic obj) => System.Text.Json.JsonSerializer.Serialize(obj);
+    public static string stringify(dynamic obj) => System.Text.Json.JsonSerializer.Serialize<object>(obj);
     public static dynamic? parse(string json) => System.Text.Json.JsonSerializer.Deserialize<System.Dynamic.ExpandoObject>(json);
 }
 
@@ -930,3 +1454,4 @@ public static class JsArrayExtensions
         return null;
     }
 }
+
