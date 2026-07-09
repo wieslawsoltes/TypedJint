@@ -33,7 +33,14 @@ public static class OptimizedJavaScriptCSharpGenerator
             ? CollectNativeFunctions(source, diagnostics, options)
             : Array.Empty<JsFunctionDeclaration>();
 
-        var safeFunctionsDict = nativeFunctions.ToDictionary(x => x.Name);
+        var safeFunctionsDict = new Dictionary<string, JsFunctionDeclaration>(StringComparer.Ordinal);
+        foreach (var fn in nativeFunctions)
+        {
+            if (fn.Name != null)
+            {
+                safeFunctionsDict.TryAdd(fn.Name, fn);
+            }
+        }
         var executableSource = FullJsToCSharpTranspiler.Transpile(source, options.ClassName, safeFunctionsDict, emitRuntimeFallback: false);
         var nativeFunctionNames = JavaScriptDeclarationScanner.Scan(source).Functions.ToArray();
         var runtimeFunctions = Array.Empty<string>();

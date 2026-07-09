@@ -181,7 +181,14 @@ public static class TypedCompilerOutputVerifier
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(result);
 
-        var functions = SimpleJsParser.ParseFunctions(source).ToDictionary(x => x.Name, StringComparer.Ordinal);
+        var functions = new Dictionary<string, JsFunctionDeclaration>(StringComparer.Ordinal);
+        foreach (var fn in SimpleJsParser.ParseFunctions(source))
+        {
+            if (fn.Name != null)
+            {
+                functions.TryAdd(fn.Name, fn);
+            }
+        }
         var outputs = new Dictionary<string, VerifiedCompilerOutput>(StringComparer.Ordinal);
 
         foreach (var pair in result.CompiledFunctions)
