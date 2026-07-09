@@ -13,12 +13,14 @@ public sealed class MainWindow : Window
     private readonly TextBox _source;
     private readonly TextBox _csharp;
     private readonly TextBox _dependenciesCsharp;
+    private readonly TextBox _libraryCsharp;
     private readonly TextBox _ir;
     private readonly TextBox _diagnostics;
     private readonly TextBox _result;
     private readonly Border _visualHost;
     private readonly ComboBox _sampleSelector;
     private TypeScriptTypeRegistry _typeRegistry = new();
+    private readonly System.Collections.Generic.Dictionary<string, string> _libraryCsharpCache = new();
 
     public MainWindow()
     {
@@ -31,6 +33,7 @@ public sealed class MainWindow : Window
         _source = CreateEditor(DefaultScript, readOnly: false);
         _csharp = CreateEditor(string.Empty, readOnly: true);
         _dependenciesCsharp = CreateEditor(string.Empty, readOnly: true);
+        _libraryCsharp = CreateEditor(string.Empty, readOnly: true);
         _ir = CreateEditor(string.Empty, readOnly: true);
         _diagnostics = CreateEditor(string.Empty, readOnly: true);
         _result = CreateEditor(string.Empty, readOnly: true);
@@ -168,6 +171,7 @@ public sealed class MainWindow : Window
         var tabControl = new TabControl();
         tabControl.Items.Add(new TabItem { Header = "User C# Code", Content = _csharp });
         tabControl.Items.Add(new TabItem { Header = "Dependencies (C# Interfaces)", Content = _dependenciesCsharp });
+        tabControl.Items.Add(new TabItem { Header = "Compiled Library C# Code", Content = _libraryCsharp });
         AddOutputPanel(outputGrid, "Generated C# preview", tabControl, 0);
         AddOutputPanel(outputGrid, "Normalized native IR", _ir, 1);
         AddOutputPanel(outputGrid, "Diagnostics + Roslyn build", _diagnostics, 2);
@@ -211,6 +215,60 @@ public sealed class MainWindow : Window
             var generated = OptimizedJavaScriptCSharpGenerator.Generate(source, genOptions);
             _csharp.Text = generated.PreviewSource;
             _dependenciesCsharp.Text = TypeScriptCSharpGenerator.Generate(_typeRegistry);
+
+            var idx = _sampleSelector.SelectedIndex;
+            string? libFileName = idx switch
+            {
+                1 => "rough.js",
+                2 => "three.js",
+                3 => "lightweight-charts.js",
+                4 => "d3.js",
+                5 => "pixi.js",
+                _ => null
+            };
+
+            if (libFileName != null)
+            {
+                _libraryCsharp.Text = $"Compiling '{libFileName}' library to C# asynchronously...";
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    try
+                    {
+                        if (!_libraryCsharpCache.TryGetValue(libFileName, out var cachedSource))
+                        {
+                            var libPath = System.IO.Path.Combine(LibraryDownloader.GetSharedDirectory(), libFileName);
+                            if (System.IO.File.Exists(libPath))
+                            {
+                                var libJs = System.IO.File.ReadAllText(libPath);
+                                var libGenOptions = new OptimizedJavaScriptCSharpGenerationOptions(EmitRuntimeFallback: false);
+                                var generatedLib = OptimizedJavaScriptCSharpGenerator.Generate(libJs, libGenOptions);
+                                cachedSource = generatedLib.PreviewSource;
+                                _libraryCsharpCache[libFileName] = cachedSource;
+                            }
+                            else
+                            {
+                                cachedSource = $"Library file not found at: {libPath}";
+                            }
+                        }
+                        
+                        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+                        {
+                            _libraryCsharp.Text = cachedSource;
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+                        {
+                            _libraryCsharp.Text = $"Failed to transpile library: {ex.Message}";
+                        });
+                    }
+                });
+            }
+            else
+            {
+                _libraryCsharp.Text = "No external library dependency for this sample.";
+            }
 
             diagnostics.AppendLine("Generated C# mode: pure C# compilation");
             diagnostics.Append("native functions: ").AppendLine(FormatList(generated.NativeFunctions));
