@@ -725,16 +725,34 @@ function init() {
     var buffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
 
-    // Rotating 3D WebGL Triangle coordinates
+    // 3D Wireframe Cube coordinates (pairs of vertices for 12 edges)
     var vertices = [
-         0.0,  0.6,  0.0,
-        -0.6, -0.6,  0.0,
-         0.6, -0.6,  0.0
+        // Front face
+        -0.5, -0.5,  0.5,   0.5, -0.5,  0.5,
+         0.5, -0.5,  0.5,   0.5,  0.5,  0.5,
+         0.5,  0.5,  0.5,  -0.5,  0.5,  0.5,
+        -0.5,  0.5,  0.5,  -0.5, -0.5,  0.5,
+        // Back face
+        -0.5, -0.5, -0.5,   0.5, -0.5, -0.5,
+         0.5, -0.5, -0.5,   0.5,  0.5, -0.5,
+         0.5,  0.5, -0.5,  -0.5,  0.5, -0.5,
+        -0.5,  0.5, -0.5,  -0.5, -0.5, -0.5,
+        // Connecting edges
+        -0.5, -0.5,  0.5,  -0.5, -0.5, -0.5,
+         0.5, -0.5,  0.5,   0.5, -0.5, -0.5,
+         0.5,  0.5,  0.5,   0.5,  0.5, -0.5,
+        -0.5,  0.5,  0.5,  -0.5,  0.5, -0.5
     ];
     gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
 
+    var angleX = 0;
+    var angleY = 0;
+
     setInterval(function() {
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        angleX += 0.02;
+        angleY += 0.03;
+        gl.uniform2f(null, angleX, angleY);
+        gl.drawArrays(gl.LINES, 0, 24);
     }, 16);
 }
 """;

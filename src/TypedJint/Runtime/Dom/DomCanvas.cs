@@ -744,6 +744,8 @@ public class WebGLRenderingContext
     public string getProgramInfoLog(WebGLProgram program) => string.Empty;
     public void useProgram(WebGLProgram program) { }
 
+    private float _angleX = 0f;
+    private float _angleY = 0f;
     private readonly List<float[]> _verticesList = new();
     private object? _boundBuffer;
 
@@ -787,33 +789,76 @@ public class WebGLRenderingContext
     public void drawArrays(uint mode, int first, int count)
     {
         var ctx2d = _canvas.getContext("2d") as CanvasRenderingContext2D;
-        if (ctx2d != null && _verticesList.Count >= 3)
+        if (ctx2d != null && _verticesList.Count >= 2)
         {
             lock (ctx2d.DrawingContext.Commands)
             {
                 ctx2d.clearRect(0, 0, _canvas.width, _canvas.height);
                 ctx2d.beginPath();
-                ctx2d.fillStyle = "#00d8ff";
+                ctx2d.strokeStyle = "#00d8ff";
+                ctx2d.fillStyle = "rgba(0, 216, 255, 0.2)";
+                ctx2d.lineWidth = 1.5;
 
-                for (int i = 0; i < count && i < _verticesList.Count; i++)
+                float cosX = (float)Math.Cos(_angleX);
+                float sinX = (float)Math.Sin(_angleX);
+                float cosY = (float)Math.Cos(_angleY);
+                float sinY = (float)Math.Sin(_angleY);
+
+                if (mode == LINES)
                 {
-                    var v = _verticesList[i];
-                    float x = v[0];
-                    float y = v[1];
+                    for (int i = 0; i < count && i + 1 < _verticesList.Count; i += 2)
+                    {
+                        var v1 = _verticesList[i];
+                        var v2 = _verticesList[i + 1];
 
-                    float scale = 120f;
-                    float px = (float)(_canvas.width / 2.0 + x * scale);
-                    float py = (float)(_canvas.height / 2.0 - y * scale);
+                        var p1 = Project(v1, cosX, sinX, cosY, sinY);
+                        var p2 = Project(v2, cosX, sinX, cosY, sinY);
 
-                    if (i == 0) ctx2d.moveTo(px, py);
-                    else ctx2d.lineTo(px, py);
+                        ctx2d.moveTo(p1.X, p1.Y);
+                        ctx2d.lineTo(p2.X, p2.Y);
+                    }
+                    ctx2d.stroke();
                 }
-                ctx2d.closePath();
-                ctx2d.fill();
+                else
+                {
+                    for (int i = 0; i < count && i < _verticesList.Count; i++)
+                    {
+                        var v = _verticesList[i];
+                        var p = Project(v, cosX, sinX, cosY, sinY);
+
+                        if (i == 0) ctx2d.moveTo(p.X, p.Y);
+                        else ctx2d.lineTo(p.X, p.Y);
+                    }
+                    ctx2d.closePath();
+                    ctx2d.fill();
+                    ctx2d.stroke();
+                }
             }
             
             Avalonia.Threading.Dispatcher.UIThread.Post(() => _canvas.AvaloniaControl?.InvalidateVisual());
         }
+    }
+
+    private Vector2 Project(float[] v, float cosX, float sinX, float cosY, float sinY)
+    {
+        float x = v[0];
+        float y = v[1];
+        float z = v[2];
+
+        float x1 = x * cosY - z * sinY;
+        float z1 = x * sinY + z * cosY;
+
+        float y2 = y * cosX - z1 * sinX;
+        float z2 = y * sinX + z1 * cosX;
+
+        float distance = 2.0f;
+        float scale = 120.0f;
+        float factor = distance / (distance + z2);
+
+        float px = (float)(_canvas.width / 2.0 + x1 * factor * scale);
+        float py = (float)(_canvas.height / 2.0 - y2 * factor * scale);
+
+        return new Vector2(px, py);
     }
 
     public void drawElements(uint mode, int count, uint type, long offset) { }
@@ -822,7 +867,11 @@ public class WebGLRenderingContext
     public int getAttribLocation(WebGLProgram program, string name) => 0;
 
     public void uniform1f(WebGLUniformLocation? loc, float x) { }
-    public void uniform2f(WebGLUniformLocation? loc, float x, float y) { }
+    public void uniform2f(WebGLUniformLocation? loc, float x, float y)
+    {
+        _angleX = x;
+        _angleY = y;
+    }
     public void uniform3f(WebGLUniformLocation? loc, float x, float y, float z) { }
     public void uniform4f(WebGLUniformLocation? loc, float x, float y, float z, float w) { }
     public void uniform1i(WebGLUniformLocation? loc, int x) { }
