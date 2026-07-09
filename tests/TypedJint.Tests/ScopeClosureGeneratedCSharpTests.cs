@@ -1,4 +1,5 @@
 using Xunit;
+using TypedJint.Runtime;
 
 namespace TypedJint.Tests;
 
@@ -88,7 +89,8 @@ public sealed class ScopeClosureGeneratedCSharpTests
 
         Assert.Contains("sumEven", generated.NativeFunctions);
         Assert.Contains("createCounter", generated.NativeFunctions);
-        Assert.Contains("runDynamic", generated.RuntimeFunctions);
+        Assert.Contains("runDynamic", generated.NativeFunctions);
+        Assert.Empty(generated.RuntimeFunctions);
         Assert.DoesNotContain(generated.Diagnostics, x => x.Severity == TypedDiagnosticSeverity.Warning);
 
         using var capture = JavaScriptConsole.Capture();

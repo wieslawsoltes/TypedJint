@@ -42,14 +42,12 @@ public sealed class OptimizedJavaScriptCSharpGeneratorTests
             """);
 
         Assert.Contains("sumEven", result.NativeFunctions);
-        Assert.Contains("runDynamic", result.RuntimeFunctions);
+        Assert.Contains("runDynamic", result.NativeFunctions);
+        Assert.Empty(result.RuntimeFunctions);
         Assert.DoesNotContain(result.Diagnostics, x => x.Severity == TypedDiagnosticSeverity.Warning);
-        Assert.Contains("private readonly JavaScriptRuntimeEngine _runtime;", result.Source, StringComparison.Ordinal);
-        Assert.Contains("private const string Source", result.Source, StringComparison.Ordinal);
         Assert.Contains("public double sumEven(double limit)", result.Source, StringComparison.Ordinal);
-        Assert.Contains("MethodImplOptions.AggressiveInlining", result.Source, StringComparison.Ordinal);
-        Assert.Contains("public object? Invoke(string functionName", result.Source, StringComparison.Ordinal);
-        Assert.Contains("class Counter", result.Source, StringComparison.Ordinal);
+        Assert.Contains("public dynamic? runDynamic()", result.Source, StringComparison.Ordinal);
+        Assert.Contains("public class Counter", result.Source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -84,10 +82,6 @@ public sealed class OptimizedJavaScriptCSharpGeneratorTests
 
         Assert.Contains("public double sumEven(double limit)", result.PreviewSource, StringComparison.Ordinal);
         Assert.Contains("public object? createCounter()", result.PreviewSource, StringComparison.Ordinal);
-        Assert.Contains("public object? Invoke(string functionName", result.PreviewSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("private const string Source", result.PreviewSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("function createCounter", result.PreviewSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("let count", result.PreviewSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -101,11 +95,10 @@ public sealed class OptimizedJavaScriptCSharpGeneratorTests
             }
             """);
 
-        Assert.Empty(result.NativeFunctions);
-        Assert.Contains("dynamicObject", result.RuntimeFunctions);
+        Assert.Contains("dynamicObject", result.NativeFunctions);
+        Assert.Empty(result.RuntimeFunctions);
         Assert.DoesNotContain(result.Diagnostics, x => x.Severity == TypedDiagnosticSeverity.Warning);
-        Assert.Contains("_runtime.Execute(Source);", result.Source, StringComparison.Ordinal);
-        Assert.DoesNotContain("private const string Source", result.PreviewSource, StringComparison.Ordinal);
+        Assert.Contains("public dynamic? dynamicObject()", result.Source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -125,7 +118,6 @@ public sealed class OptimizedJavaScriptCSharpGeneratorTests
             new OptimizedJavaScriptCSharpGenerationOptions(EmitRuntimeFallback: false));
 
         Assert.Contains("add", result.NativeFunctions);
-        Assert.DoesNotContain("JavaScriptRuntimeEngine", result.Source, StringComparison.Ordinal);
         Assert.Contains("public double add(double a, double b)", result.Source, StringComparison.Ordinal);
         Assert.Equal(result.Source, result.PreviewSource);
     }

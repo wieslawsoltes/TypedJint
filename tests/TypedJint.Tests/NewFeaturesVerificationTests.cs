@@ -4,6 +4,7 @@ using System.Dynamic;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
+using TypedJint.Runtime;
 
 namespace TypedJint.Tests;
 
@@ -608,4 +609,173 @@ public class NewFeaturesVerificationTests
         var drawPathCmd = ctx.DrawingContext.Commands.First(c => c.Type == ProGPU.Scene.RenderCommandType.DrawPath);
         Assert.NotNull(drawPathCmd.Path);
     }
+
+    [Fact]
+    public void TestDomWindowAndExtensions()
+    {
+        var doc = new DomDocument();
+        var window = new DomWindow(doc);
+
+        Assert.Equal(1.0, window.devicePixelRatio);
+        Assert.Equal(800.0, window.innerWidth);
+        Assert.Equal(600.0, window.innerHeight);
+
+        // Location
+        Assert.Equal("http://localhost/", window.location.href);
+        Assert.Equal("/", window.location.pathname);
+
+        // Navigator
+        Assert.Equal("en-US", window.navigator.language);
+        Assert.True(window.navigator.onLine);
+
+        // Local/Session Storage
+        window.localStorage.setItem("myKey", "myValue");
+        Assert.Equal("myValue", window.localStorage.getItem("myKey"));
+        Assert.Equal(1, window.localStorage.length);
+        window.localStorage.clear();
+        Assert.Equal(0, window.localStorage.length);
+
+        // Performance
+        Assert.True(window.performance.now() >= 0);
+
+        // getBoundingClientRect
+        var el = doc.createElement("div");
+        var rect = el.getBoundingClientRect();
+        Assert.Equal(0.0, rect.x);
+        Assert.Equal(0.0, rect.width);
+        Assert.Equal(0.0, rect.top);
+        Assert.Equal(0.0, rect.right);
+    }
+
+    [Fact]
+    public void TestTypeScriptDefinitionParsingAndCompilation()
+    {
+        var dtsContent = @"
+            interface CanvasRenderingContext2D {
+                fillRect(x: number, y: number, w: number, h: number): void;
+                strokeRect(x: number, y: number, w: number, h: number): void;
+            }
+            declare var document: Document;
+            interface Document {
+                createElement(tagName: string): HTMLCanvasElement;
+            }
+            interface HTMLCanvasElement {
+                getContext(contextId: string): CanvasRenderingContext2D;
+            }
+        ";
+
+        var registry = TypeScriptDefParser.Parse(dtsContent);
+        Assert.Equal("Document", registry.GetGlobalType("document"));
+
+        var docType = registry.GetTypeInfo("Document");
+        Assert.NotNull(docType);
+        Assert.True(docType.Methods.ContainsKey("createElement"));
+        Assert.Equal("HTMLCanvasElement", docType.Methods["createElement"].ReturnType);
+
+        // Compile script utilizing these types statically
+        var source = @"
+            function drawScene() {
+                var canvas = document.createElement('canvas');
+                var ctx = canvas.getContext('2d');
+                ctx.fillRect(10, 20, 100, 200);
+            }
+        ";
+
+        var engine = new TypedJintEngine(new TypedJintOptions
+        {
+            CompilationMode = TypedCompilationMode.CompileSafeFunctionsOnly,
+            Backend = TypedBackendKind.CSharp
+        });
+        engine.TypeScriptRegistry.Merge(registry);
+        var result = engine.Execute(source);
+        Assert.NotEmpty(result.CompiledFunctions);
+        Assert.True(result.CompiledFunctions.ContainsKey("drawScene"));
+    }
+
+    [Fact]
+    public void TestCanvasColorParsingOptions()
+    {
+        var canvas = new HTMLCanvasElement();
+        var ctx = (CanvasRenderingContext2D)canvas.getContext("2d")!;
+
+        // 1. Hex
+        ctx.fillStyle = "#ff0000";
+        ctx.fillRect(0, 0, 10, 10);
+        var cmd1 = ctx.DrawingContext.Commands.Last();
+        var col1 = ((ProGPU.Vector.SolidColorBrush)cmd1.Brush!).Color;
+        Assert.Equal(1f, col1.X); // R
+        Assert.Equal(0f, col1.Y); // G
+
+        // 2. RGBA
+        ctx.fillStyle = "rgba(0, 255, 0, 0.5)";
+        ctx.fillRect(0, 0, 10, 10);
+        var cmd2 = ctx.DrawingContext.Commands.Last();
+        var col2 = ((ProGPU.Vector.SolidColorBrush)cmd2.Brush!).Color;
+        Assert.Equal(0f, col2.X);
+        Assert.Equal(1f, col2.Y);
+        Assert.Equal(0.5f, col2.W); // A
+
+        // 3. HSL
+        ctx.fillStyle = "hsl(120, 100%, 50%)"; // Pure Green
+        ctx.fillRect(0, 0, 10, 10);
+        var cmd3 = ctx.DrawingContext.Commands.Last();
+        var col3 = ((ProGPU.Vector.SolidColorBrush)cmd3.Brush!).Color;
+        Assert.Equal(0f, col3.X);
+        Assert.Equal(1f, col3.Y);
+    }
+
+    [Fact]
+    public async Task TestLibraryDownloaderAndDefinitions()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+        try
+        {
+            await LibraryDownloader.DownloadLibrariesAsync(tempDir);
+            
+            Assert.True(File.Exists(Path.Combine(tempDir, "rough.d.ts")));
+            Assert.True(File.Exists(Path.Combine(tempDir, "three.d.ts")));
+            Assert.True(File.Exists(Path.Combine(tempDir, "lightweight-charts.d.ts")));
+            Assert.True(File.Exists(Path.Combine(tempDir, "d3.d.ts")));
+            Assert.True(File.Exists(Path.Combine(tempDir, "pixi.d.ts")));
+
+            var registry = LibraryDownloader.LoadDefinitions(tempDir);
+            Assert.True(registry.Globals.ContainsKey("rough"));
+            Assert.True(registry.Globals.ContainsKey("THREE"));
+            Assert.True(registry.Globals.ContainsKey("LightweightCharts"));
+            Assert.True(registry.Globals.ContainsKey("d3"));
+            Assert.True(registry.Globals.ContainsKey("PIXI"));
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Fact]
+    public void TestTranspilerDebugForRough()
+    {
+        var slnDir = AppContext.BaseDirectory;
+        while (!string.IsNullOrEmpty(slnDir))
+        {
+            if (File.Exists(Path.Combine(slnDir, "TypedJint.sln")))
+            {
+                break;
+            }
+            slnDir = Path.GetDirectoryName(slnDir);
+        }
+        var roughJsPath = Path.Combine(slnDir, "samples", "shared", "rough.js");
+        var source = File.ReadAllText(roughJsPath);
+        var transpiled = FullJsToCSharpTranspiler.Transpile(source, "Rough");
+        
+        // Print the lines containing 'dynamic? c =' to see if and where they are declared
+        var lines = transpiled.Split('\n');
+        for (int i = 0; i < Math.Min(lines.Length, 150); i++)
+        {
+            if (lines[i].Contains("dynamic? c ") || lines[i].Contains("dynamic? u "))
+            {
+                Console.WriteLine($"Line {i+1}: {lines[i]}");
+            }
+        }
+    }
 }
+

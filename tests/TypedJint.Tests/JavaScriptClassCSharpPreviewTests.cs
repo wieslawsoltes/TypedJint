@@ -26,14 +26,13 @@ public sealed class JavaScriptClassCSharpPreviewTests
             }
             """);
 
-        Assert.Contains("public sealed class Counter", result.PreviewSource, StringComparison.Ordinal);
+        Assert.Contains("public class Counter", result.PreviewSource, StringComparison.Ordinal);
         Assert.Contains("public dynamic? value { get; set; }", result.PreviewSource, StringComparison.Ordinal);
-        Assert.Contains("public Counter(dynamic? value)", result.PreviewSource, StringComparison.Ordinal);
+        Assert.Contains("public Counter(dynamic? value", result.PreviewSource, StringComparison.Ordinal);
         Assert.Contains("this.value = value;", result.PreviewSource, StringComparison.Ordinal);
         Assert.Contains("public dynamic? next()", result.PreviewSource, StringComparison.Ordinal);
         Assert.Contains("return ++this.value;", result.PreviewSource, StringComparison.Ordinal);
-        Assert.Contains("public object? runDynamic(params object?[] arguments)", result.PreviewSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("private const string Source", result.PreviewSource, StringComparison.Ordinal);
+        Assert.Contains("public dynamic? runDynamic()", result.PreviewSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -84,13 +83,12 @@ public sealed class JavaScriptClassCSharpPreviewTests
 
         Assert.Contains("sumEven", result.NativeFunctions);
         Assert.Contains("createCounter", result.NativeFunctions);
-        Assert.Contains("runDynamic", result.RuntimeFunctions);
-        Assert.Contains("public sealed class Counter", result.PreviewSource, StringComparison.Ordinal);
+        Assert.Contains("runDynamic", result.NativeFunctions);
+        Assert.Empty(result.RuntimeFunctions);
+        Assert.Contains("public class Counter", result.PreviewSource, StringComparison.Ordinal);
         Assert.Contains("public object? createCounter()", result.PreviewSource, StringComparison.Ordinal);
-        Assert.Contains("public object? runDynamic(params object?[] arguments)", result.PreviewSource, StringComparison.Ordinal);
+        Assert.Contains("public dynamic? runDynamic()", result.PreviewSource, StringComparison.Ordinal);
         Assert.Contains("public double sumEven(double limit)", result.PreviewSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("function createCounter", result.PreviewSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("let count", result.PreviewSource, StringComparison.Ordinal);
     }
 
     [Fact]

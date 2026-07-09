@@ -1,4 +1,5 @@
 using Xunit;
+using TypedJint.Runtime;
 
 namespace TypedJint.Tests;
 

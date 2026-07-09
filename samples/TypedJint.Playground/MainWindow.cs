@@ -4,6 +4,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
+using TypedJint.Runtime;
 
 namespace TypedJint.Playground;
 
@@ -11,9 +12,13 @@ public sealed class MainWindow : Window
 {
     private readonly TextBox _source;
     private readonly TextBox _csharp;
+    private readonly TextBox _dependenciesCsharp;
     private readonly TextBox _ir;
     private readonly TextBox _diagnostics;
     private readonly TextBox _result;
+    private readonly Border _visualHost;
+    private readonly ComboBox _sampleSelector;
+    private TypeScriptTypeRegistry _typeRegistry = new();
 
     public MainWindow()
     {
@@ -25,12 +30,61 @@ public sealed class MainWindow : Window
 
         _source = CreateEditor(DefaultScript, readOnly: false);
         _csharp = CreateEditor(string.Empty, readOnly: true);
+        _dependenciesCsharp = CreateEditor(string.Empty, readOnly: true);
         _ir = CreateEditor(string.Empty, readOnly: true);
         _diagnostics = CreateEditor(string.Empty, readOnly: true);
         _result = CreateEditor(string.Empty, readOnly: true);
+        
+        _visualHost = new Border
+        {
+            BorderBrush = Brushes.Gray,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(8),
+            Background = Brushes.Black,
+            Margin = new Thickness(12, 0, 0, 0)
+        };
+
+        _sampleSelector = new ComboBox
+        {
+            Width = 260,
+            Margin = new Thickness(0, 0, 16, 8),
+            VerticalAlignment = VerticalAlignment.Center
+        };
 
         Content = BuildUi();
         RunScript();
+
+        // Down-load libraries asynchronously in the background to avoid freezing app startup
+        _diagnostics.Text = "Checking and downloading external JS libraries and TypeScript definitions asynchronously...\n";
+        System.Threading.Tasks.Task.Run(async () =>
+        {
+            try
+            {
+                var sharedDir = LibraryDownloader.GetSharedDirectory();
+                await LibraryDownloader.DownloadLibrariesAsync(sharedDir);
+                var registry = LibraryDownloader.LoadDefinitions(sharedDir);
+                
+                Avalonia.Threading.Dispatcher.UIThread.Post(async () =>
+                {
+                    _typeRegistry = registry;
+                    _diagnostics.Text += "External type definitions loaded successfully!\n\n";
+                    RunScript();
+                    
+                    if (Environment.GetCommandLineArgs().Contains("--auto-test"))
+                    {
+                        await RunVerificationCycle();
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+                {
+                    _diagnostics.Text += $"Failed to load external type definitions: {ex.Message}\n\n";
+                });
+            }
+        });
     }
 
     private Control BuildUi()
@@ -38,29 +92,66 @@ public sealed class MainWindow : Window
         var root = new Grid { Margin = new Thickness(12) };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.2, GridUnitType.Star) });
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.0, GridUnitType.Star) });
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.2, GridUnitType.Star) });
 
         var runButton = new Button
         {
             Content = "Compile, verify, build, run",
             HorizontalAlignment = HorizontalAlignment.Left,
-            Margin = new Thickness(0, 0, 8, 8)
+            Margin = new Thickness(0, 0, 16, 8)
         };
         runButton.Click += (_, _) => RunScript();
 
+        var selectLabel = new TextBlock
+        {
+            Text = "Sample Code:",
+            FontWeight = FontWeight.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(16, 0, 8, 8)
+        };
+
+        _sampleSelector.ItemsSource = new[]
+        {
+            "Math / Counters Loop (Default)",
+            "Rough.js - 2D Vector Drawing",
+            "Three.js - Projected 3D WebGL Mesh",
+            "TradingView - Lightweight Charts",
+            "D3.js - Dynamic Bar Chart Visualizer",
+            "PixiJS - 60FPS Interactive Particles"
+        };
+        _sampleSelector.SelectedIndex = 0;
+        _sampleSelector.SelectionChanged += (s, e) =>
+        {
+            var idx = _sampleSelector.SelectedIndex;
+            _source.Text = idx switch
+            {
+                1 => RoughJsTemplate,
+                2 => ThreeJsTemplate,
+                3 => LightweightChartsTemplate,
+                4 => D3JsTemplate,
+                5 => PixiJsTemplate,
+                _ => DefaultScript
+            };
+        };
+
         var title = new TextBlock
         {
-            Text = "TypedJint JS → readable C# preview + Roslyn executable build/run",
+            Text = "TypedJint JS → C# preview + Live Interactive DOM Visual Host (Avalonia/ProGPU)",
             FontWeight = FontWeight.SemiBold,
-            VerticalAlignment = VerticalAlignment.Center
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 8)
         };
 
         var toolbar = new StackPanel { Orientation = Orientation.Horizontal };
         toolbar.Children.Add(runButton);
+        toolbar.Children.Add(selectLabel);
+        toolbar.Children.Add(_sampleSelector);
         toolbar.Children.Add(title);
+        
         Grid.SetRow(toolbar, 0);
-        Grid.SetColumnSpan(toolbar, 2);
+        Grid.SetColumnSpan(toolbar, 3);
         root.Children.Add(toolbar);
 
         var sourcePanel = CreateLabeledPanel("JavaScript input", _source);
@@ -74,7 +165,10 @@ public sealed class MainWindow : Window
         outputGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         outputGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-        AddOutputPanel(outputGrid, "Generated C# preview", _csharp, 0);
+        var tabControl = new TabControl();
+        tabControl.Items.Add(new TabItem { Header = "User C# Code", Content = _csharp });
+        tabControl.Items.Add(new TabItem { Header = "Dependencies (C# Interfaces)", Content = _dependenciesCsharp });
+        AddOutputPanel(outputGrid, "Generated C# preview", tabControl, 0);
         AddOutputPanel(outputGrid, "Normalized native IR", _ir, 1);
         AddOutputPanel(outputGrid, "Diagnostics + Roslyn build", _diagnostics, 2);
         AddOutputPanel(outputGrid, "Execution result", _result, 3);
@@ -83,20 +177,42 @@ public sealed class MainWindow : Window
         Grid.SetColumn(outputGrid, 1);
         root.Children.Add(outputGrid);
 
+        var visualPanel = CreateLabeledPanel("Live DOM & Interactivity (Avalonia)", _visualHost);
+        Grid.SetRow(visualPanel, 1);
+        Grid.SetColumn(visualPanel, 2);
+        root.Children.Add(visualPanel);
+
         return root;
     }
 
     private void RunScript()
     {
+        // Clear background timers and animation frames from any previous runs
+        JavaScriptStandardLibrary.ClearAllTimers();
+        JavaScriptStandardLibrary.ClearAllRafs();
+
         var source = _source.Text ?? string.Empty;
         var diagnostics = new StringBuilder();
 
+        // Create the active DOM document for this execution run
+        var domDoc = new DomDocument();
+        JavaScriptRuntimeEngine.CurrentDocument = domDoc;
+        JavaScriptRuntimeEngine.CurrentWindow = new DomWindow(domDoc);
+
+        var runtimeEngine = new JavaScriptRuntimeEngine(new JavaScriptRuntimeOptions
+        {
+            Document = domDoc
+        }).RegisterStandardLibrary();
+        JavaScriptRuntimeEngine.CurrentEngine = runtimeEngine;
+
         try
         {
-            var generated = OptimizedJavaScriptCSharpGenerator.Generate(source);
+            var genOptions = new OptimizedJavaScriptCSharpGenerationOptions(EmitRuntimeFallback: false, TypeScriptRegistry: _typeRegistry);
+            var generated = OptimizedJavaScriptCSharpGenerator.Generate(source, genOptions);
             _csharp.Text = generated.PreviewSource;
+            _dependenciesCsharp.Text = TypeScriptCSharpGenerator.Generate(_typeRegistry);
 
-            diagnostics.AppendLine("Generated C# mode: optimized hybrid");
+            diagnostics.AppendLine("Generated C# mode: pure C# compilation");
             diagnostics.Append("native functions: ").AppendLine(FormatList(generated.NativeFunctions));
             diagnostics.Append("runtime functions: ").AppendLine(FormatList(generated.RuntimeFunctions));
             diagnostics.AppendLine();
@@ -111,10 +227,9 @@ public sealed class MainWindow : Window
             }
 
             diagnostics.AppendLine();
-
             var generatedRunText = CompileAndRunGeneratedCSharp(generated, diagnostics);
             var nativeSource = BuildNativeSource(source, generated.NativeFunctions);
-            var verified = TryExecuteVerified(nativeSource, diagnostics);
+            var verified = TryExecuteVerified(nativeSource, diagnostics, _typeRegistry);
 
             _ir.Text = verified is null
                 ? generated.NativeFunctions.Count == 0
@@ -125,7 +240,8 @@ public sealed class MainWindow : Window
             var resultBuilder = new StringBuilder();
             if (verified is not null)
             {
-                var typedEngine = new TypedJintEngine().RegisterStandardLibrary();
+                var typedEngine = new TypedJintEngine().RegisterStandardLibrary().RegisterDom(domDoc);
+                typedEngine.TypeScriptRegistry.Merge(_typeRegistry);
                 typedEngine.Execute(nativeSource);
                 resultBuilder.AppendLine(FormatExecutionResult(typedEngine, verified));
                 diagnostics.AppendLine(FormatDiagnostics(verified));
@@ -134,6 +250,13 @@ public sealed class MainWindow : Window
             resultBuilder.AppendLine(generatedRunText);
             _result.Text = resultBuilder.ToString();
             _diagnostics.Text = diagnostics.ToString();
+
+            Console.WriteLine($"\n================== SCRIPT RUN RESULT ==================");
+            Console.WriteLine(_result.Text);
+            Console.WriteLine($"=======================================================");
+
+            // Render visual controls tree natively in Playground border host
+            _visualHost.Child = domDoc.body.AvaloniaControl;
         }
         catch (Exception ex)
         {
@@ -176,7 +299,7 @@ public sealed class MainWindow : Window
         return builder.ToString();
     }
 
-    private static VerifiedTypedCompilationResult? TryExecuteVerified(string nativeSource, StringBuilder diagnostics)
+    private static VerifiedTypedCompilationResult? TryExecuteVerified(string nativeSource, StringBuilder diagnostics, TypeScriptTypeRegistry typeRegistry)
     {
         if (string.IsNullOrWhiteSpace(nativeSource))
         {
@@ -188,6 +311,7 @@ public sealed class MainWindow : Window
         try
         {
             var engine = new TypedJintEngine().RegisterStandardLibrary();
+            engine.TypeScriptRegistry.Merge(typeRegistry);
             return engine.ExecuteVerified(nativeSource, CreateRuntimeCases(nativeSource));
         }
         catch (Exception ex)
@@ -478,4 +602,256 @@ function runDynamic() {
     return counter.next();
 }
 """;
+
+    private const string RoughJsTemplate = """
+/**
+ * @returns {void}
+ */
+function init() {
+    var canvas = document.createElement('canvas');
+    canvas.width = 300;
+    canvas.height = 200;
+    canvas.style.width = '300px';
+    canvas.style.height = '200px';
+    document.body.appendChild(canvas);
+
+    // Call the real rough.js!
+    var rc = rough.canvas(canvas);
+    
+    // Draw sketch rectangle
+    rc.rectangle(15, 15, 110, 90, {
+        fill: 'rgba(255, 0, 100, 0.3)',
+        fillStyle: 'solid',
+        stroke: 'red',
+        strokeWidth: 2
+    });
+    
+    // Draw sketch circle
+    rc.circle(200, 60, 70, {
+        fill: 'rgba(0, 200, 255, 0.4)',
+        stroke: 'blue',
+        strokeWidth: 1.5
+    });
+
+    // Draw sketch line
+    rc.line(15, 140, 280, 140, {
+        stroke: 'green',
+        strokeWidth: 3
+    });
+
+    // Draw sketch circle interactively on click
+    canvas.addEventListener('pointerdown', function(e) {
+        rc.circle(e.clientX, e.clientY, 20, {
+            fill: 'rgba(255, 200, 0, 0.8)',
+            fillStyle: 'solid'
+        });
+    });
+}
+""";
+
+    private const string ThreeJsTemplate = """
+/**
+ * @returns {void}
+ */
+function init() {
+    var canvas = document.createElement('canvas');
+    canvas.width = 300;
+    canvas.height = 200;
+    canvas.style.width = '300px';
+    canvas.style.height = '200px';
+    document.body.appendChild(canvas);
+
+    var gl = canvas.getContext('webgl');
+    gl.viewport(0, 0, 300, 200);
+
+    var buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+
+    // Rotating 3D WebGL Triangle coordinates
+    var vertices = [
+         0.0,  0.6,  0.0,
+        -0.6, -0.6,  0.0,
+         0.6, -0.6,  0.0
+    ];
+    gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+    setInterval(function() {
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }, 16);
+}
+""";
+
+    private const string LightweightChartsTemplate = """
+/**
+ * @returns {void}
+ */
+function init() {
+    var container = document.createElement('div');
+    container.style.width = '300px';
+    container.style.height = '200px';
+    container.style.backgroundColor = '#131722';
+    document.body.appendChild(container);
+
+    // Call the real lightweight-charts.js!
+    var chart = LightweightCharts.createChart(container, {
+        width: 300,
+        height: 200,
+        layout: {
+            backgroundColor: '#131722',
+            textColor: '#d1d4dc',
+        },
+        grid: {
+            vertLines: { color: 'rgba(42, 46, 57, 0.5)' },
+            horzLines: { color: 'rgba(42, 46, 57, 0.5)' },
+        }
+    });
+
+    var lineSeries = chart.addLineSeries({
+        color: 'rgba(4, 111, 232, 1)',
+        lineWidth: 2,
+    });
+
+    lineSeries.setData([
+        { time: '2026-07-01', value: 80.01 },
+        { time: '2026-07-02', value: 96.63 },
+        { time: '2026-07-03', value: 76.64 },
+        { time: '2026-07-04', value: 81.89 },
+        { time: '2026-07-05', value: 74.43 },
+        { time: '2026-07-06', value: 85.01 },
+        { time: '2026-07-07', value: 96.63 },
+        { time: '2026-07-08', value: 110.15 }
+    ]);
+}
+""";
+
+    private const string D3JsTemplate = """
+/**
+ * @returns {void}
+ */
+function init() {
+    // Call the real d3.js DOM selection and binding!
+    var container = d3.select(document.body)
+        .append("div")
+        .style("width", "300px")
+        .style("height", "200px")
+        .style("background-color", "#111116");
+
+    container.append("h3")
+        .text("Real D3.js Data Binding")
+        .style("color", "#00ffcc")
+        .style("margin-top", "10px")
+        .style("margin-left", "10px");
+
+    var data = [10, 20, 30];
+    container.selectAll("div.item")
+        .data(data)
+        .enter()
+        .append("div")
+        .style("margin-top", "5px")
+        .style("margin-left", "10px")
+        .style("padding", "2px")
+        .style("color", "#00ffff")
+        .text(function(d) { return "D3 Item Val: " + d; });
+}
+""";
+
+    private const string PixiJsTemplate = """
+/**
+ * @returns {void}
+ */
+function init() {
+    var container = document.createElement('div');
+    container.style.width = '300px';
+    container.style.height = '200px';
+    document.body.appendChild(container);
+
+    // Call the real pixi.js application!
+    var app = new PIXI.Application({
+        width: 300,
+        height: 200,
+        backgroundColor: 0x1099bb
+    });
+    container.appendChild(app.view);
+
+    var graphics = new PIXI.Graphics();
+    graphics.beginFill(0xde3249);
+    graphics.drawRect(-35, -35, 70, 70);
+    graphics.endFill();
+    
+    graphics.x = 150;
+    graphics.y = 100;
+
+    app.stage.addChild(graphics);
+
+    app.ticker.add(function(delta) {
+        graphics.rotation += 0.02 * delta;
+    });
+}
+""";
+
+    private async System.Threading.Tasks.Task RunVerificationCycle()
+    {
+        var artifactDir = "/Users/wieslawsoltes/.gemini/antigravity/brain/9d5c81f5-11f6-42ed-abc6-273c3a08c377";
+        var names = new[] { "math", "rough", "three", "charts", "d3", "pixi" };
+
+        for (int i = 0; i < names.Length; i++)
+        {
+            _sampleSelector.SelectedIndex = i;
+            RunScript();
+            // Let the UI and timers render/execute
+            await System.Threading.Tasks.Task.Delay(1000);
+            
+            var fileName = System.IO.Path.Combine(artifactDir, $"{names[i]}_jint.png");
+            SaveVisualToPng(_visualHost.Child, fileName);
+        }
+
+        // Close playground window cleanly
+        Close();
+    }
+
+    private void SaveVisualToPng(Control? control, string filePath)
+    {
+        if (control == null) return;
+        try
+        {
+            var bounds = control.Bounds;
+            var width = (int)Math.Max(bounds.Width, 300);
+            var height = (int)Math.Max(bounds.Height, 200);
+
+            Console.WriteLine($"[DEBUG] Sizing visual {control.GetType().Name} (hash={control.GetHashCode()}) to {width}x{height}");
+            if (control is Avalonia.Controls.Panel panel)
+            {
+                Console.WriteLine($"[DEBUG] Panel children count: {panel.Children.Count} (hash={panel.GetHashCode()})");
+                foreach (var child in panel.Children)
+                {
+                    Console.WriteLine($"[DEBUG]   Child: {child.GetType().Name}, Size: {child.Bounds.Width}x{child.Bounds.Height}");
+                    if (child is AvaloniaCanvasHost canvasHost)
+                    {
+                        var ctx = canvasHost.GetType().GetField("_canvas", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?.GetValue(canvasHost) as HTMLCanvasElement;
+                        var ctx2d = ctx?.getContext("2d") as CanvasRenderingContext2D;
+                        Console.WriteLine($"[DEBUG]     Canvas 2D commands count: {ctx2d?.DrawingContext.Commands.Count ?? 0}");
+                    }
+                }
+            }
+
+            ForceRecursiveLayout(control, new Size(width, height));
+
+            var pixelSize = new PixelSize(width, height);
+            var bitmap = new Avalonia.Media.Imaging.RenderTargetBitmap(pixelSize, new Vector(96, 96));
+            bitmap.Render(control);
+            bitmap.Save(filePath);
+            Console.WriteLine($"[DEBUG] Saved screenshot to {filePath}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[DEBUG] Error saving screenshot: {ex.Message}");
+        }
+    }
+
+    private void ForceRecursiveLayout(Control control, Size availableSize)
+    {
+        control.Measure(availableSize);
+        control.Arrange(new Rect(0, 0, availableSize.Width, availableSize.Height));
+        control.UpdateLayout();
+    }
 }
