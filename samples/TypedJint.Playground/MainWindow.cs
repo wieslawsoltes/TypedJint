@@ -504,7 +504,7 @@ public sealed class MainWindow : Window
     {
         var builder = new StringBuilder();
         builder.Append("compiled: ").AppendLine(string.Join(", ", verified.Compilation.CompiledFunctions.Keys));
-        builder.Append("fallback: ").AppendLine(string.Join(", ", verified.Compilation.Fallbacks.Keys));
+        builder.Append("unannotated: ").AppendLine(string.Join(", ", verified.Compilation.Fallbacks.Keys));
         builder.AppendLine();
 
         if (verified.Compilation.CompiledFunctions.ContainsKey("sumEven"))

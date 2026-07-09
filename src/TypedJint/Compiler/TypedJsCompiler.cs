@@ -207,7 +207,7 @@ public sealed class TypedJsCompiler
 
                     var del = new Func<object?[], object?>(args => scriptInstance.InvokeRuntime(fn.Name, args));
                     _compiled[fn.Name] = new GeneratedScriptCompiledFunction(fn.Name, scriptInstance, runtimeInvokeMethod, isNative: false, del);
-                    AddFallback(fn.Name, "Function uses Jint runtime fallback facade on generated C# class.", fn.Span);
+                    AddFallback(fn.Name, "Function is compiled dynamically (unannotated).", fn.Span);
                 }
                 else
                 {
@@ -220,7 +220,7 @@ public sealed class TypedJsCompiler
     private void AddFallback(string functionName, string reason, SourceSpan? span)
     {
         _fallbacks[functionName] = new FallbackInfo(functionName, reason, span);
-        AddDiagnostic("TJ0500", TypedDiagnosticSeverity.Warning, $"Function '{functionName}' uses Jint fallback: {reason}", span);
+        AddDiagnostic("TJ0500", TypedDiagnosticSeverity.Warning, $"Function '{functionName}' is unannotated: {reason}", span);
     }
 
     private void AddDiagnostic(string code, TypedDiagnosticSeverity severity, string message, SourceSpan? span)
