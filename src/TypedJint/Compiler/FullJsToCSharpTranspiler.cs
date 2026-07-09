@@ -148,7 +148,7 @@ public static class FullJsToCSharpTranspiler
         }
     }
 
-    public static string Transpile(string source, string className, Dictionary<string, JsFunctionDeclaration>? safeFunctions = null)
+    public static string Transpile(string source, string className, Dictionary<string, JsFunctionDeclaration>? safeFunctions = null, bool emitRuntimeFallback = true)
     {
         _nestedClassDepth = 0;
         ArgumentsNames.Clear();
@@ -386,9 +386,12 @@ public static class FullJsToCSharpTranspiler
         sb.AppendLine("    public static dynamic setInterval { get; set; } = new Func<dynamic?, dynamic?, dynamic>((callback, delay) => JavaScriptStandardLibrary.setInterval(callback, delay));");
         sb.AppendLine("    public static dynamic clearInterval { get; set; } = new Action<dynamic?>(id => JavaScriptStandardLibrary.clearInterval(id));");
         sb.AppendLine("    public static dynamic Array { get; set; } = typeof(JsArray);");
-        sb.AppendLine("    private readonly JavaScriptRuntimeEngine _runtime;");
-        sb.AppendLine("    private const string Source = \"\";");
-        sb.AppendLine();
+        if (emitRuntimeFallback)
+        {
+            sb.AppendLine("    private readonly JavaScriptRuntimeEngine _runtime;");
+            sb.AppendLine("    private const string Source = \"\";");
+            sb.AppendLine();
+        }
 
         // 2. Declare top-level variables as static C# class fields
         foreach (var field in fields)
@@ -398,16 +401,22 @@ public static class FullJsToCSharpTranspiler
         sb.AppendLine();
 
         // 3. Constructor
-        sb.AppendLine($"    public {className}()");
-        sb.AppendLine("    {");
-        sb.AppendLine("        dynamic? self = this;");
-        sb.AppendLine("        if (false) _runtime.Execute(Source);");
-        foreach (var cStmt in constructorStatements)
+        if (constructorStatements.Count > 0 || emitRuntimeFallback)
         {
-            sb.AppendLine("        " + cStmt);
+            sb.AppendLine($"    public {className}()");
+            sb.AppendLine("    {");
+            sb.AppendLine("        dynamic? self = this;");
+            if (emitRuntimeFallback)
+            {
+                sb.AppendLine("        if (false) _runtime.Execute(Source);");
+            }
+            foreach (var cStmt in constructorStatements)
+            {
+                sb.AppendLine("        " + cStmt);
+            }
+            sb.AppendLine("    }");
+            sb.AppendLine();
         }
-        sb.AppendLine("    }");
-        sb.AppendLine();
 
         // 4. Methods (static)
         foreach (var method in methods)

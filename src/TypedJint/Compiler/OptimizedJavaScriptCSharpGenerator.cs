@@ -38,7 +38,7 @@ public static class OptimizedJavaScriptCSharpGenerator
         if (!options.EmitRuntimeFallback)
         {
             var safeFunctionsDict = nativeFunctions.ToDictionary(x => x.Name);
-            var executableSource = FullJsToCSharpTranspiler.Transpile(source, options.ClassName, safeFunctionsDict);
+            var executableSource = FullJsToCSharpTranspiler.Transpile(source, options.ClassName, safeFunctionsDict, emitRuntimeFallback: false);
             var nativeFunctionNames = JavaScriptDeclarationScanner.Scan(source).Functions.ToArray();
             var runtimeFunctions = Array.Empty<string>();
             return new OptimizedJavaScriptCSharpGenerationResult(
