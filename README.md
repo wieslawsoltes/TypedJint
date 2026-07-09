@@ -136,18 +136,11 @@ Runtime-compatible top-level mode preserves arbitrary JavaScript semantics by em
 var csharp = JavaScriptCSharpGenerator.GenerateRuntimeTopLevelStatements(source);
 ```
 
-Optimized hybrid class mode emits native C# methods for statically safe functions and keeps a runtime fallback for the rest of the JavaScript program:
+Optimized C# class generator compiles all JavaScript functions and classes directly to dynamic/native C# members:
 
 ```csharp
 var generated = OptimizedJavaScriptCSharpGenerator.Generate(source);
 Console.WriteLine(generated.Source);
-```
-
-Pure C# generation mode (bypasses Jint fallback completely):
-
-```csharp
-var options = new OptimizedJavaScriptCSharpGenerationOptions { EmitRuntimeFallback = false };
-var generated = OptimizedJavaScriptCSharpGenerator.Generate(source, options);
 ```
 
 ## Build and run generated C# with Roslyn
@@ -178,7 +171,7 @@ if (!execution.Success)
 
 var script = (GeneratedCSharpScriptInstance)execution.Instance!;
 Console.WriteLine(script.InvokeMethod("add", 10.0, 32.0));
-Console.WriteLine(script.InvokeRuntime("answer"));
+Console.WriteLine(script.InvokeMethod("answer"));
 ```
 
 ## JavaScript runtime execution
