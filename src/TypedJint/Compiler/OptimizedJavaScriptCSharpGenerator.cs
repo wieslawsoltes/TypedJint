@@ -1,13 +1,16 @@
 using System.Text;
+using TypedJint.Runtime;
 
 namespace TypedJint;
 
 public sealed record OptimizedJavaScriptCSharpGenerationOptions(
     string ClassName = "ScriptModule",
     bool EmitNativeMethods = true,
-    bool EmitRuntimeFallback = true,
+    bool EmitRuntimeFallback = false,
     bool EmitAggressiveInlining = true,
-    bool IncludeNullable = true);
+    bool IncludeNullable = true,
+    TypeScriptTypeRegistry? TypeScriptRegistry = null,
+    IReadOnlyDictionary<string, object?>? Globals = null);
 
 public sealed record OptimizedJavaScriptCSharpGenerationResult(
     string Source,
@@ -27,22 +30,37 @@ public static class OptimizedJavaScriptCSharpGenerator
 
         var diagnostics = new List<TypedDiagnostic>();
         var nativeFunctions = options.EmitNativeMethods
-            ? CollectNativeFunctions(source, diagnostics)
+            ? CollectNativeFunctions(source, diagnostics, options)
             : Array.Empty<JsFunctionDeclaration>();
 
         var classSources = JavaScriptClassSourceScanner.Scan(source);
-        var executableSource = BuildExecutableSource(source, nativeFunctions, options);
-        var nativeFunctionNames = nativeFunctions.Select(x => x.Name).ToArray();
-        var runtimeFunctions = JavaScriptDeclarationScanner.Scan(source).Functions
-            .Where(x => !nativeFunctionNames.Contains(x, StringComparer.Ordinal))
+
+        if (!options.EmitRuntimeFallback)
+        {
+            var safeFunctionsDict = nativeFunctions.ToDictionary(x => x.Name);
+            var executableSource = FullJsToCSharpTranspiler.Transpile(source, options.ClassName, safeFunctionsDict);
+            var nativeFunctionNames = JavaScriptDeclarationScanner.Scan(source).Functions.ToArray();
+            var runtimeFunctions = Array.Empty<string>();
+            return new OptimizedJavaScriptCSharpGenerationResult(
+                executableSource,
+                executableSource,
+                nativeFunctionNames,
+                runtimeFunctions,
+                diagnostics);
+        }
+
+        var executableSourceNorm = BuildExecutableSource(source, nativeFunctions, options);
+        var nativeFunctionNamesNorm = nativeFunctions.Select(x => x.Name).ToArray();
+        var runtimeFunctionsNorm = JavaScriptDeclarationScanner.Scan(source).Functions
+            .Where(x => !nativeFunctionNamesNorm.Contains(x, StringComparer.Ordinal))
             .ToArray();
-        var previewSource = BuildPreviewSource(nativeFunctions, runtimeFunctions, classSources, options);
+        var previewSource = BuildPreviewSource(nativeFunctions, runtimeFunctionsNorm, classSources, options);
 
         return new OptimizedJavaScriptCSharpGenerationResult(
-            executableSource,
+            executableSourceNorm,
             previewSource,
-            nativeFunctionNames,
-            runtimeFunctions,
+            nativeFunctionNamesNorm,
+            runtimeFunctionsNorm,
             diagnostics);
     }
 
@@ -65,7 +83,7 @@ public static class OptimizedJavaScriptCSharpGenerator
             builder.AppendLine();
             builder.Append("    public ").Append(SanitizeIdentifier(options.ClassName)).AppendLine("()");
             builder.AppendLine("    {");
-            builder.AppendLine("        _runtime = new JavaScriptRuntimeEngine().RegisterStandardLibrary();");
+            builder.AppendLine("        _runtime = JavaScriptRuntimeEngine.CurrentEngine ?? new JavaScriptRuntimeEngine().RegisterStandardLibrary();");
             builder.AppendLine("        _runtime.Execute(Source);");
             builder.AppendLine("    }");
             builder.AppendLine();
@@ -114,7 +132,7 @@ public static class OptimizedJavaScriptCSharpGenerator
             builder.AppendLine();
             builder.Append("    public ").Append(SanitizeIdentifier(options.ClassName)).AppendLine("()");
             builder.AppendLine("    {");
-            builder.AppendLine("        _runtime = new JavaScriptRuntimeEngine().RegisterStandardLibrary();");
+            builder.AppendLine("        _runtime = JavaScriptRuntimeEngine.CurrentEngine ?? new JavaScriptRuntimeEngine().RegisterStandardLibrary();");
             builder.AppendLine("    }");
             builder.AppendLine();
             AppendRuntimeMembers(builder);
@@ -147,6 +165,7 @@ public static class OptimizedJavaScriptCSharpGenerator
         builder.AppendLine("using System.Collections.Generic;");
         builder.AppendLine("using System.Runtime.CompilerServices;");
         builder.AppendLine("using TypedJint;");
+        builder.AppendLine("using TypedJint.Runtime;");
         builder.AppendLine();
         if (emitClassDeclaration)
         {
@@ -190,12 +209,15 @@ public static class OptimizedJavaScriptCSharpGenerator
         }
     }
 
-    private static IReadOnlyList<JsFunctionDeclaration> CollectNativeFunctions(string source, List<TypedDiagnostic> diagnostics)
+    private static IReadOnlyList<JsFunctionDeclaration> CollectNativeFunctions(
+        string source,
+        List<TypedDiagnostic> diagnostics,
+        OptimizedJavaScriptCSharpGenerationOptions options)
     {
         var functions = new List<JsFunctionDeclaration>();
         foreach (var candidate in JavaScriptFunctionSourceScanner.Scan(source))
         {
-            if (TryParseAndCompile(candidate, diagnostics, out var parsed))
+            if (TryParseAndCompile(candidate, diagnostics, options, out var parsed))
             {
                 functions.Add(parsed);
             }
@@ -207,6 +229,7 @@ public static class OptimizedJavaScriptCSharpGenerator
     private static bool TryParseAndCompile(
         JavaScriptFunctionSource candidate,
         List<TypedDiagnostic> diagnostics,
+        OptimizedJavaScriptCSharpGenerationOptions options,
         out JsFunctionDeclaration function)
     {
         function = null!;
@@ -222,7 +245,7 @@ public static class OptimizedJavaScriptCSharpGenerator
                 return false;
             }
 
-            if (!IsNativelyCompilable(candidate.Source, parsed.Name, diagnostics))
+            if (!IsNativelyCompilable(candidate.Source, parsed.Name, diagnostics, options))
             {
                 return false;
             }
@@ -240,7 +263,11 @@ public static class OptimizedJavaScriptCSharpGenerator
         }
     }
 
-    private static bool IsNativelyCompilable(string functionSource, string functionName, List<TypedDiagnostic> diagnostics)
+    private static bool IsNativelyCompilable(
+        string functionSource,
+        string functionName,
+        List<TypedDiagnostic> diagnostics,
+        OptimizedJavaScriptCSharpGenerationOptions options)
     {
         try
         {
@@ -254,12 +281,21 @@ public static class OptimizedJavaScriptCSharpGenerator
                 ["time"] = JavaScriptTime.Instance
             };
 
+            if (options.Globals != null)
+            {
+                foreach (var pair in options.Globals)
+                {
+                    globals[pair.Key] = pair.Value;
+                }
+            }
+
             var compileResult = new TypedJsCompiler(
                 globals,
                 new TypedJintOptions
                 {
                     CompilationMode = TypedCompilationMode.CompileSafeFunctionsOnly,
-                    ThrowOnCompilationFailure = false
+                    ThrowOnCompilationFailure = false,
+                    TypeScriptRegistry = options.TypeScriptRegistry
                 }).Compile(functionSource);
 
             diagnostics.AddRange(compileResult.Diagnostics.Where(x => x.Severity != TypedDiagnosticSeverity.Warning));

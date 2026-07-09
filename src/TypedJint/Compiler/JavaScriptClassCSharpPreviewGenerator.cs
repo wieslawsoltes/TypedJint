@@ -123,8 +123,8 @@ public static class JavaScriptClassCSharpPreviewGenerator
         var methodValue = method.Value;
         if (methodValue == null) return;
 
-        var name = method.Key is Identifier id ? id.Name : method.Key.ToString();
-        var parameters = methodValue.Params.Select(p => "dynamic? " + SanitizeIdentifier(p is Identifier paramId ? paramId.Name : p.ToString())).ToArray();
+        var name = method.Key is Identifier id ? id.Name : FormatExpression(method.Key);
+        var parameters = methodValue.Params.Select(p => "dynamic? " + SanitizeIdentifier(FormatParameterName(p))).ToArray();
 
         if (method.Kind == PropertyKind.Get)
         {
@@ -320,7 +320,28 @@ public static class JavaScriptClassCSharpPreviewGenerator
             TemplateLiteral t => FormatTemplateLiteral(t),
             ObjectExpression obj => FormatObjectExpression(obj),
             ArrowFunctionExpression arrow => FormatArrowFunction(arrow),
-            _ => expr.ToString() ?? "null"
+            FunctionExpression func => $"({string.Join(", ", func.Params.Select(FormatParameterName))}) => {FormatBlock(func.Body)}",
+            SequenceExpression seq => $"({string.Join(", ", seq.Expressions.Select(FormatExpression))})",
+            _ => "null"
+        };
+    }
+
+    private static string FormatBlock(FunctionBody? body)
+    {
+        if (body == null) return "{}";
+        var visitor = new PreviewBodyVisitor();
+        visitor.Visit(body);
+        return "{ " + string.Join(" ", visitor.Lines) + " }";
+    }
+
+    private static string FormatParameterName(Node param)
+    {
+        return param switch
+        {
+            Identifier id => id.Name,
+            AssignmentPattern assign => assign.Left is Identifier idLeft ? idLeft.Name : FormatExpression(assign.Left),
+            RestElement rest => rest.Argument is Identifier idRest ? idRest.Name : FormatExpression(rest.Argument),
+            _ => FormatExpression(param)
         };
     }
 
@@ -403,11 +424,12 @@ public static class JavaScriptClassCSharpPreviewGenerator
 
     private static string FormatArrowFunction(ArrowFunctionExpression arrow)
     {
-        var parameters = string.Join(", ", arrow.Params.Select(p => p is Identifier id ? id.Name : p.ToString()));
+        var parameters = string.Join(", ", arrow.Params.Select(FormatParameterName));
         var body = arrow.Body switch
         {
             Expression expr => FormatExpression(expr),
-            _ => arrow.Body.ToString()
+            FunctionBody block => FormatBlock(block),
+            _ => "null"
         };
         return $"({parameters}) => {body}";
     }
@@ -419,9 +441,9 @@ public static class JavaScriptClassCSharpPreviewGenerator
             Identifier id => id.Name,
             MemberExpression nested => FormatMemberExpression(nested),
             ThisExpression => "this",
-            _ => mem.Object.ToString()
+            _ => FormatExpression(mem.Object)
         };
-        var prop = mem.Property is Identifier propId ? propId.Name : mem.Property.ToString();
+        var prop = mem.Property is Identifier propId ? propId.Name : FormatExpression(mem.Property);
         return mem.Computed ? $"{obj}[{prop}]" : $"{obj}.{prop}";
     }
 
