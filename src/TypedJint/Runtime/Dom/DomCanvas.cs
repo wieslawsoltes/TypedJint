@@ -791,35 +791,25 @@ public class WebGLRenderingContext
         {
             lock (ctx2d.DrawingContext.Commands)
             {
+                ctx2d.clearRect(0, 0, _canvas.width, _canvas.height);
                 ctx2d.beginPath();
-                ctx2d.fillStyle = "rgba(0, 150, 255, 0.7)";
-                ctx2d.strokeStyle = "white";
-
-                float time = (float)(DateTime.Now.TimeOfDay.TotalSeconds);
-                float cos = (float)Math.Cos(time);
-                float sin = (float)Math.Sin(time);
+                ctx2d.fillStyle = "#00d8ff";
 
                 for (int i = 0; i < count && i < _verticesList.Count; i++)
                 {
                     var v = _verticesList[i];
                     float x = v[0];
                     float y = v[1];
-                    float z = v[2];
-
-                    float x1 = x * cos - z * sin;
-                    float z1 = x * sin + z * cos;
-                    float y2 = y * cos - z1 * sin;
 
                     float scale = 120f;
-                    float px = (float)(_canvas.width / 2.0 + x1 * scale);
-                    float py = (float)(_canvas.height / 2.0 - y2 * scale);
+                    float px = (float)(_canvas.width / 2.0 + x * scale);
+                    float py = (float)(_canvas.height / 2.0 - y * scale);
 
                     if (i == 0) ctx2d.moveTo(px, py);
                     else ctx2d.lineTo(px, py);
                 }
                 ctx2d.closePath();
                 ctx2d.fill();
-                ctx2d.stroke();
             }
             
             Avalonia.Threading.Dispatcher.UIThread.Post(() => _canvas.AvaloniaControl?.InvalidateVisual());
