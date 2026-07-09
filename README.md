@@ -8,11 +8,13 @@ It keeps Jint as the JavaScript semantic runtime, then adds:
 - safe-function compilation to .NET delegates through expression trees
 - JavaScript-to-C# generation in class, top-level statement, runtime-compatible, and optimized hybrid modes
 - Roslyn-based generated C# build/run support
+- pure C# code generation mode (with `EmitRuntimeFallback = false`) that compiles the entire JS file directly to native C# classes
+- dynamic Jint `JsValue` interop (preserving prototype lookup, constructors, member lookups, and indexers)
 - strongly typed compiled delegate access for low-overhead invocation
 - verified compiler output: semantic signature, delegate signature, normalized IR, C# preview, and diagnostics
-- optional runtime equivalence checks against Jint for pure functions
 - direct typed CLR/DOM interop
-- a small native .NET DOM, event, and HTMLML-ready object model
+- a small native .NET DOM, event, and HTML/canvas-ready object model
+- a visual rendering layer powered by Avalonia and ProGPU for drawing commands
 - a JavaScript runtime backend for dynamic ECMAScript features that are not statically compiled
 
 ## Current implementation
@@ -141,7 +143,12 @@ var generated = OptimizedJavaScriptCSharpGenerator.Generate(source);
 Console.WriteLine(generated.Source);
 ```
 
-The optimized hybrid mode marks native methods with `MethodImplOptions.AggressiveInlining` by default and exposes `Invoke(...)`/`Evaluate(...)` for runtime-backed dynamic JavaScript.
+Pure C# generation mode (bypasses Jint fallback completely):
+
+```csharp
+var options = new OptimizedJavaScriptCSharpGenerationOptions { EmitRuntimeFallback = false };
+var generated = OptimizedJavaScriptCSharpGenerator.Generate(source, options);
+```
 
 ## Build and run generated C# with Roslyn
 
@@ -172,14 +179,6 @@ if (!execution.Success)
 var script = (GeneratedCSharpScriptInstance)execution.Instance!;
 Console.WriteLine(script.InvokeMethod("add", 10.0, 32.0));
 Console.WriteLine(script.InvokeRuntime("answer"));
-```
-
-For top-level generated C# programs:
-
-```csharp
-var program = JavaScriptCSharpGenerator.GenerateRuntimeTopLevelStatements(source);
-var run = GeneratedCSharpCompiler.RunTopLevelProgram(program);
-Console.WriteLine(run.Success);
 ```
 
 ## JavaScript runtime execution
@@ -233,7 +232,7 @@ var button = engine.Document.createElement("button");
 engine.Invoke("setup", button);
 ```
 
-## Avalonia playground
+## Avalonia desktop playground & verification suite
 
 Run the desktop playground:
 
@@ -241,16 +240,13 @@ Run the desktop playground:
 dotnet run --project samples/TypedJint.Playground
 ```
 
-The playground shows:
+Run the automated verify, compile, and capture cycle:
 
-- JavaScript input
-- generated C# preview
-- normalized IR
-- compiler diagnostics
-- Roslyn build diagnostics for generated C#
-- generated C# execution results
-- verified runtime results
-- DOM interop output
+```bash
+dotnet run --project samples/TypedJint.Playground -- --auto-test
+```
+
+This verify cycle compiles and executes pure C# transpiled code for five templates (Math, Rough.js, Three.js, Lightweight Charts, D3.js, PixiJS) and exports layout-propagated screenshots to PNG format in the artifacts directory.
 
 ## Benchmarks
 
