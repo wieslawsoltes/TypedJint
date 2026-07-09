@@ -226,44 +226,32 @@ public sealed class MainWindow : Window
                 5 => "pixi.js",
                 _ => null
             };
+            string? libClassName = idx switch
+            {
+                1 => "RoughLibraryModule",
+                2 => "ThreeLibraryModule",
+                3 => "LightweightChartsLibraryModule",
+                4 => "D3LibraryModule",
+                5 => "PixiLibraryModule",
+                _ => null
+            };
 
+            string? libCsharpSource = null;
             if (libFileName != null)
             {
-                _libraryCsharp.Text = $"Compiling '{libFileName}' library to C# asynchronously...";
-                System.Threading.Tasks.Task.Run(() =>
+                if (!_libraryCsharpCache.TryGetValue(libFileName, out libCsharpSource))
                 {
-                    try
+                    var libPath = System.IO.Path.Combine(LibraryDownloader.GetSharedDirectory(), libFileName);
+                    if (System.IO.File.Exists(libPath))
                     {
-                        if (!_libraryCsharpCache.TryGetValue(libFileName, out var cachedSource))
-                        {
-                            var libPath = System.IO.Path.Combine(LibraryDownloader.GetSharedDirectory(), libFileName);
-                            if (System.IO.File.Exists(libPath))
-                            {
-                                var libJs = System.IO.File.ReadAllText(libPath);
-                                var libGenOptions = new OptimizedJavaScriptCSharpGenerationOptions(EmitRuntimeFallback: false);
-                                var generatedLib = OptimizedJavaScriptCSharpGenerator.Generate(libJs, libGenOptions);
-                                cachedSource = generatedLib.PreviewSource;
-                                _libraryCsharpCache[libFileName] = cachedSource;
-                            }
-                            else
-                            {
-                                cachedSource = $"Library file not found at: {libPath}";
-                            }
-                        }
-                        
-                        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
-                        {
-                            _libraryCsharp.Text = cachedSource;
-                        });
+                        var libJs = System.IO.File.ReadAllText(libPath);
+                        var libGenOptions = new OptimizedJavaScriptCSharpGenerationOptions(ClassName: libClassName ?? "ScriptModule", EmitRuntimeFallback: false);
+                        var generatedLib = OptimizedJavaScriptCSharpGenerator.Generate(libJs, libGenOptions);
+                        libCsharpSource = generatedLib.PreviewSource;
+                        _libraryCsharpCache[libFileName] = libCsharpSource;
                     }
-                    catch (Exception ex)
-                    {
-                        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
-                        {
-                            _libraryCsharp.Text = $"Failed to transpile library: {ex.Message}";
-                        });
-                    }
-                });
+                }
+                _libraryCsharp.Text = libCsharpSource ?? $"Library file not found.";
             }
             else
             {
@@ -285,7 +273,7 @@ public sealed class MainWindow : Window
             }
 
             diagnostics.AppendLine();
-            var generatedRunText = CompileAndRunGeneratedCSharp(generated, diagnostics);
+            var generatedRunText = CompileAndRunGeneratedCSharp(generated, libCsharpSource, libClassName, diagnostics);
             var nativeSource = BuildNativeSource(source, generated.NativeFunctions);
             var verified = TryExecuteVerified(nativeSource, diagnostics, _typeRegistry);
 
@@ -381,10 +369,21 @@ public sealed class MainWindow : Window
         }
     }
 
-    private static string CompileAndRunGeneratedCSharp(OptimizedJavaScriptCSharpGenerationResult generated, StringBuilder diagnostics)
+    private static string CompileAndRunGeneratedCSharp(
+        OptimizedJavaScriptCSharpGenerationResult generated,
+        string? libraryCsharpSource,
+        string? libraryClassName,
+        StringBuilder diagnostics)
     {
         using var capture = JavaScriptConsole.Capture();
-        var execution = GeneratedCSharpCompiler.CreateScriptInstance(generated.Source, "ScriptModule");
+        
+        var sources = new List<string> { generated.Source };
+        if (!string.IsNullOrEmpty(libraryCsharpSource))
+        {
+            sources.Add(libraryCsharpSource);
+        }
+
+        var execution = GeneratedCSharpCompiler.CreateScriptInstance(sources, "ScriptModule");
         diagnostics.AppendLine("Generated executable C# Roslyn build:");
         diagnostics.AppendLine(FormatGeneratedBuild(execution.Build));
         diagnostics.AppendLine();
@@ -402,6 +401,40 @@ public sealed class MainWindow : Window
         if (execution.Instance is not GeneratedCSharpScriptInstance script)
         {
             return "generated executable C# build succeeded, but no script instance was created.";
+        }
+
+        // Initialize the library module (running its top-level code in its constructor)
+        if (!string.IsNullOrEmpty(libraryClassName))
+        {
+            try
+            {
+                var libType = execution.Build.Assembly?.GetType(libraryClassName);
+                if (libType != null)
+                {
+                    var libInstance = Activator.CreateInstance(libType);
+                    if (libInstance != null)
+                    {
+                        var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static;
+                        foreach (var prop in libType.GetProperties(flags))
+                        {
+                            if (prop.CanRead)
+                            {
+                                var val = prop.GetValue(libInstance);
+                                JavaScriptRuntime.SetGlobal(prop.Name, val);
+                            }
+                        }
+                        foreach (var field in libType.GetFields(flags))
+                        {
+                            var val = field.GetValue(libInstance);
+                            JavaScriptRuntime.SetGlobal(field.Name, val);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                diagnostics.AppendLine($"WARNING: Failed to initialize library class '{libraryClassName}': {ex.Message}");
+            }
         }
 
         var builder = new StringBuilder();
@@ -712,47 +745,24 @@ function init() {
  * @returns {void}
  */
 function init() {
-    var canvas = document.createElement('canvas');
-    canvas.width = 300;
-    canvas.height = 200;
-    canvas.style.width = '300px';
-    canvas.style.height = '200px';
-    document.body.appendChild(canvas);
+    var scene = new THREE.Scene();
+    var camera = new THREE.PerspectiveCamera(75, 1.5, 0.1, 1000);
+    var renderer = new THREE.WebGLRenderer();
+    renderer.setSize(300, 200);
+    document.body.appendChild(renderer.domElement);
 
-    var gl = canvas.getContext('webgl');
-    gl.viewport(0, 0, 300, 200);
+    // Create a cube wireframe mesh using Three.js APIs
+    var geometry = new THREE.BoxGeometry(1, 1, 1);
+    var material = new THREE.MeshBasicMaterial({ color: 0x00d8ff });
+    var cube = new THREE.Mesh(geometry, material);
+    scene.add(cube);
 
-    var buffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-
-    // 3D Wireframe Cube coordinates (pairs of vertices for 12 edges)
-    var vertices = [
-        // Front face
-        -0.5, -0.5,  0.5,   0.5, -0.5,  0.5,
-         0.5, -0.5,  0.5,   0.5,  0.5,  0.5,
-         0.5,  0.5,  0.5,  -0.5,  0.5,  0.5,
-        -0.5,  0.5,  0.5,  -0.5, -0.5,  0.5,
-        // Back face
-        -0.5, -0.5, -0.5,   0.5, -0.5, -0.5,
-         0.5, -0.5, -0.5,   0.5,  0.5, -0.5,
-         0.5,  0.5, -0.5,  -0.5,  0.5, -0.5,
-        -0.5,  0.5, -0.5,  -0.5, -0.5, -0.5,
-        // Connecting edges
-        -0.5, -0.5,  0.5,  -0.5, -0.5, -0.5,
-         0.5, -0.5,  0.5,   0.5, -0.5, -0.5,
-         0.5,  0.5,  0.5,   0.5,  0.5, -0.5,
-        -0.5,  0.5,  0.5,  -0.5,  0.5, -0.5
-    ];
-    gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-
-    var angleX = 0;
-    var angleY = 0;
+    camera.position.z = 2;
 
     setInterval(function() {
-        angleX += 0.02;
-        angleY += 0.03;
-        gl.uniform2f(null, angleX, angleY);
-        gl.drawArrays(gl.LINES, 0, 24);
+        cube.rotation.x += 0.02;
+        cube.rotation.y += 0.03;
+        renderer.render(scene, camera);
     }, 16);
 }
 """;
