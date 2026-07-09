@@ -755,36 +755,24 @@ public class WebGLRenderingContext
 
     public void bufferData(uint target, object data, uint usage)
     {
-        if (data is double[] dblArr)
+        if (data is System.Collections.IEnumerable enumerable && data is not string)
         {
-            var floats = dblArr.Select(x => (float)x).ToArray();
-            _verticesList.Clear();
-            for (int i = 0; i < floats.Length; i += 3)
+            var floats = new List<float>();
+            foreach (var item in enumerable)
             {
-                if (i + 2 < floats.Length)
+                if (item != null)
                 {
-                    _verticesList.Add(new[] { floats[i], floats[i+1], floats[i+2] });
+                    try
+                    {
+                        floats.Add(Convert.ToSingle(item, CultureInfo.InvariantCulture));
+                    }
+                    catch {}
                 }
             }
-        }
-        else if (data is float[] fltArr)
-        {
             _verticesList.Clear();
-            for (int i = 0; i < fltArr.Length; i += 3)
+            for (int i = 0; i < floats.Count; i += 3)
             {
-                if (i + 2 < fltArr.Length)
-                {
-                    _verticesList.Add(new[] { fltArr[i], fltArr[i+1], fltArr[i+2] });
-                }
-            }
-        }
-        else if (data is object[] objArr)
-        {
-            var floats = objArr.Select(x => Convert.ToSingle(x, CultureInfo.InvariantCulture)).ToArray();
-            _verticesList.Clear();
-            for (int i = 0; i < floats.Length; i += 3)
-            {
-                if (i + 2 < floats.Length)
+                if (i + 2 < floats.Count)
                 {
                     _verticesList.Add(new[] { floats[i], floats[i+1], floats[i+2] });
                 }
