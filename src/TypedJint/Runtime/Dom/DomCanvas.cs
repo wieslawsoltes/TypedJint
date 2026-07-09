@@ -755,11 +755,13 @@ public class WebGLRenderingContext
         _boundBuffer = buffer;
     }
 
-    public void bufferData(uint target, object data, uint usage)
+    private List<float> ConvertToFloatList(object? data)
     {
+        var floats = new List<float>();
+        if (data == null) return floats;
+
         if (data is System.Collections.IEnumerable enumerable && data is not string)
         {
-            var floats = new List<float>();
             foreach (var item in enumerable)
             {
                 if (item != null)
@@ -771,15 +773,47 @@ public class WebGLRenderingContext
                     catch {}
                 }
             }
-            _verticesList.Clear();
-            for (int i = 0; i < floats.Count; i += 3)
+            return floats;
+        }
+
+        var lengthVal = JavaScriptRuntimeEngine.GetProperty(data, "length");
+        if (lengthVal != null)
+        {
+            try
             {
-                if (i + 2 < floats.Count)
+                int length = Convert.ToInt32(lengthVal, CultureInfo.InvariantCulture);
+                for (int i = 0; i < length; i++)
                 {
-                    _verticesList.Add(new[] { floats[i], floats[i+1], floats[i+2] });
+                    var item = JavaScriptRuntimeEngine.GetIndex(data, i);
+                    if (item != null)
+                    {
+                        floats.Add(Convert.ToSingle(item, CultureInfo.InvariantCulture));
+                    }
+                    else
+                    {
+                        floats.Add(0.0f);
+                    }
                 }
             }
+            catch {}
         }
+        return floats;
+    }
+
+    public void bufferData(uint target, object data, uint usage)
+    {
+        Console.WriteLine($"[DEBUG bufferData] data type: {data?.GetType().FullName}");
+        var floats = ConvertToFloatList(data);
+        Console.WriteLine($"[DEBUG bufferData] Converted to {floats.Count} floats");
+        _verticesList.Clear();
+        for (int i = 0; i < floats.Count; i += 3)
+        {
+            if (i + 2 < floats.Count)
+            {
+                _verticesList.Add(new[] { floats[i], floats[i+1], floats[i+2] });
+            }
+        }
+        Console.WriteLine($"[DEBUG bufferData] _verticesList count: {_verticesList.Count}");
     }
 
     public void enableVertexAttribArray(uint index) { }
@@ -788,6 +822,7 @@ public class WebGLRenderingContext
     
     public void drawArrays(uint mode, int first, int count)
     {
+        Console.WriteLine($"[DEBUG drawArrays] mode: {mode}, count: {count}, _verticesList count: {_verticesList.Count}");
         var ctx2d = _canvas.getContext("2d") as CanvasRenderingContext2D;
         if (ctx2d != null && _verticesList.Count >= 2)
         {
@@ -941,6 +976,15 @@ public class WebGLRenderingContext
     public object? getExtension(string name)
     {
         return null;
+    }
+    public object? getShaderPrecisionFormat(object? shaderType, object? precisionType)
+    {
+        return new Dictionary<string, object>
+        {
+            { "rangeMin", 1 },
+            { "rangeMax", 1 },
+            { "precision", 1 }
+        };
     }
     public void activeTexture(object? texture) { }
     public void deleteTexture(object? texture) { }
