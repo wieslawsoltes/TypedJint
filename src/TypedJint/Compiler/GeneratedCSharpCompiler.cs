@@ -101,14 +101,14 @@ public static class GeneratedCSharpCompiler
         string source,
         GeneratedCSharpCompilerOptions? options = null)
     {
-        return BuildCore(source, OutputKind.DynamicallyLinkedLibrary, options);
+        return BuildCore(new[] { source }, OutputKind.DynamicallyLinkedLibrary, options);
     }
 
     public static GeneratedCSharpExecutionResult RunTopLevelProgram(
         string source,
         GeneratedCSharpCompilerOptions? options = null)
     {
-        var build = BuildCore(source, OutputKind.ConsoleApplication, options);
+        var build = BuildCore(new[] { source }, OutputKind.ConsoleApplication, options);
         if (!build.Success || build.Assembly is null)
         {
             return new GeneratedCSharpExecutionResult { Build = build };
@@ -152,7 +152,15 @@ public static class GeneratedCSharpCompiler
         string typeName = "ScriptModule",
         GeneratedCSharpCompilerOptions? options = null)
     {
-        var build = BuildLibrary(source, options);
+        return CreateScriptInstance(new[] { source }, typeName, options);
+    }
+
+    public static GeneratedCSharpExecutionResult CreateScriptInstance(
+        IEnumerable<string> sources,
+        string typeName = "ScriptModule",
+        GeneratedCSharpCompilerOptions? options = null)
+    {
+        var build = BuildLibrary(sources, options);
         if (!build.Success || build.Assembly is null)
         {
             return new GeneratedCSharpExecutionResult { Build = build };
@@ -189,18 +197,27 @@ public static class GeneratedCSharpCompiler
         }
     }
 
+
+    public static GeneratedCSharpBuildResult BuildLibrary(
+        IEnumerable<string> sources,
+        GeneratedCSharpCompilerOptions? options = null)
+    {
+        return BuildCore(sources, OutputKind.DynamicallyLinkedLibrary, options);
+    }
+
     private static GeneratedCSharpBuildResult BuildCore(
-        string source,
+        IEnumerable<string> sources,
         OutputKind outputKind,
         GeneratedCSharpCompilerOptions? options = null)
     {
-        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(sources);
         options ??= new GeneratedCSharpCompilerOptions();
 
         var parseOptions = CSharpParseOptions.Default
             .WithLanguageVersion(options.CSharpLanguageVersion)
             .WithDocumentationMode(DocumentationMode.None);
-        var syntaxTree = CSharpSyntaxTree.ParseText(source, parseOptions);
+
+        var syntaxTrees = sources.Select(source => CSharpSyntaxTree.ParseText(source, parseOptions)).ToArray();
 
         var compilationOptions = new CSharpCompilationOptions(outputKind)
             .WithOptimizationLevel(options.Optimize ? OptimizationLevel.Release : OptimizationLevel.Debug)
@@ -210,7 +227,7 @@ public static class GeneratedCSharpCompiler
         var assemblyName = options.AssemblyName + "." + Guid.NewGuid().ToString("N");
         var compilation = CSharpCompilation.Create(
             assemblyName,
-            new[] { syntaxTree },
+            syntaxTrees,
             CreateReferences(),
             compilationOptions);
 
@@ -221,11 +238,13 @@ public static class GeneratedCSharpCompiler
             .Select(ToDiagnostic)
             .ToArray();
 
+        var primarySource = sources.FirstOrDefault() ?? string.Empty;
+
         if (!emit.Success)
         {
             return new GeneratedCSharpBuildResult
             {
-                Source = source,
+                Source = primarySource,
                 Success = false,
                 Diagnostics = diagnostics
             };
@@ -236,7 +255,7 @@ public static class GeneratedCSharpCompiler
         var assembly = loadContext.LoadFromStream(pe);
         return new GeneratedCSharpBuildResult
         {
-            Source = source,
+            Source = primarySource,
             Success = true,
             Diagnostics = diagnostics,
             Assembly = assembly,
@@ -260,7 +279,6 @@ public static class GeneratedCSharpCompiler
         AddReference(references, typeof(Console).Assembly.Location);
         AddReference(references, typeof(Enumerable).Assembly.Location);
         AddReference(references, typeof(TypedJintEngine).Assembly.Location);
-        AddReference(references, typeof(Jint.Engine).Assembly.Location);
 
         return references.Values.ToArray();
     }

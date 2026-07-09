@@ -28,6 +28,11 @@ public static class FullJsToCSharpTranspiler
     private static HashSet<string> TopLevelFunctions => _topLevelFunctions ??= new HashSet<string>(StringComparer.Ordinal);
 
     [ThreadStatic]
+    private static HashSet<string>? _currentAllFunctions;
+
+    private static HashSet<string> CurrentAllFunctions => _currentAllFunctions ??= new HashSet<string>(StringComparer.Ordinal);
+
+    [ThreadStatic]
     private static Stack<string>? _enclosingConstructs;
     private static Stack<string> EnclosingConstructs => _enclosingConstructs ??= new Stack<string>();
 
@@ -61,6 +66,9 @@ public static class FullJsToCSharpTranspiler
 
     [ThreadStatic]
     private static Dictionary<string, HashSet<string>>? _currentStaticProperties;
+
+    [ThreadStatic]
+    private static string? _fileClassName;
 
     [ThreadStatic]
     private static bool _isStaticScope;
@@ -132,6 +140,7 @@ public static class FullJsToCSharpTranspiler
             {
                 var vars = new HashSet<string>(StringComparer.Ordinal);
                 ScanDeclaredVariables(body, vars);
+                ScanDeclaredFunctions(body, vars);
                 foreach (var v in vars)
                 {
                     PromotedFields.Add(v);
@@ -146,11 +155,91 @@ public static class FullJsToCSharpTranspiler
                 }
             }
         }
+
+        private void ScanDeclaredFunctions(Node node, HashSet<string> vars)
+        {
+            if (node is Program prog)
+            {
+                foreach (var stmt in prog.Body)
+                {
+                    if (stmt is FunctionDeclaration funcDecl && funcDecl.Id is Identifier id)
+                    {
+                        vars.Add(id.Name);
+                    }
+                    else
+                    {
+                        ScanDeclaredFunctions(stmt, vars);
+                    }
+                }
+            }
+            else if (node is BlockStatement block)
+            {
+                foreach (var stmt in block.Body)
+                {
+                    if (stmt is FunctionDeclaration funcDecl && funcDecl.Id is Identifier id)
+                    {
+                        vars.Add(id.Name);
+                    }
+                    else
+                    {
+                        ScanDeclaredFunctions(stmt, vars);
+                    }
+                }
+            }
+            else if (node is FunctionBody funcBody)
+            {
+                foreach (var stmt in funcBody.Body)
+                {
+                    if (stmt is FunctionDeclaration funcDecl && funcDecl.Id is Identifier id)
+                    {
+                        vars.Add(id.Name);
+                    }
+                    else
+                    {
+                        ScanDeclaredFunctions(stmt, vars);
+                    }
+                }
+            }
+            else if (node is IfStatement ifStmt)
+            {
+                ScanDeclaredFunctions(ifStmt.Consequent, vars);
+                if (ifStmt.Alternate != null) ScanDeclaredFunctions(ifStmt.Alternate, vars);
+            }
+            else if (node is SwitchStatement sw)
+            {
+                foreach (var caseNode in sw.Cases)
+                {
+                    foreach (var stmt in caseNode.Consequent)
+                    {
+                        if (stmt is FunctionDeclaration funcDecl && funcDecl.Id is Identifier id)
+                        {
+                            vars.Add(id.Name);
+                        }
+                        else
+                        {
+                            ScanDeclaredFunctions(stmt, vars);
+                        }
+                    }
+                }
+            }
+            else if (node is TryStatement tr)
+            {
+                ScanDeclaredFunctions(tr.Block, vars);
+                if (tr.Handler != null) ScanDeclaredFunctions(tr.Handler.Body, vars);
+                if (tr.Finalizer != null) ScanDeclaredFunctions(tr.Finalizer, vars);
+            }
+            else if (node is ForStatement forS) ScanDeclaredFunctions(forS.Body, vars);
+            else if (node is ForInStatement forIn) ScanDeclaredFunctions(forIn.Body, vars);
+            else if (node is ForOfStatement forOf) ScanDeclaredFunctions(forOf.Body, vars);
+            else if (node is WhileStatement wh) ScanDeclaredFunctions(wh.Body, vars);
+            else if (node is DoWhileStatement dw) ScanDeclaredFunctions(dw.Body, vars);
+        }
     }
 
     public static string Transpile(string source, string className, Dictionary<string, JsFunctionDeclaration>? safeFunctions = null, bool emitRuntimeFallback = true)
     {
         _nestedClassDepth = 0;
+        _fileClassName = className;
         ArgumentsNames.Clear();
         LocalFunctionsStack.Clear();
         EnclosingConstructs.Clear();
@@ -190,6 +279,15 @@ public static class FullJsToCSharpTranspiler
             }
         }
 
+        // Collect all top-level functions
+        var allFunctions = new HashSet<string>(TopLevelFunctions, StringComparer.Ordinal);
+        CurrentAllFunctions.Clear();
+        foreach (var f in allFunctions)
+        {
+            CurrentAllFunctions.Add(f);
+        }
+        Console.WriteLine($"[Transpile] Promoted fields: {string.Join(", ", promotedFields)}");
+
         var fields = new HashSet<string>(StringComparer.Ordinal);
         var classes = new List<string>();
         var methods = new List<string>();
@@ -202,10 +300,25 @@ public static class FullJsToCSharpTranspiler
             fields.Add(field);
         }
 
+        foreach (var f in allFunctions)
+        {
+            if (promotedFields.Contains(f))
+            {
+                // Conflict exists. The C# method will be f_fn, and the delegate property is f (which is already in fields via promotedFields).
+                constructorStatements.Add($"{SanitizeIdentifier(f, className)} = JavaScriptRuntime.CreateDelegate(self, \"{SanitizeIdentifier(f + "_fn", className)}\");");
+            }
+            else
+            {
+                // No conflict. The C# method will be f, and the delegate property is f_var.
+                fields.Add(f + "_var");
+                constructorStatements.Add($"{SanitizeIdentifier(f + "_var", className)} = JavaScriptRuntime.CreateDelegate(self, \"{SanitizeIdentifier(f, className)}\");");
+            }
+        }
+
         // Transpile all classes
         foreach (var classDecl in collectedClasses)
         {
-            classes.Add(TranspileClass(classDecl, collectedClasses, className));
+            classes.Add(TranspileClass(classDecl, collectedClasses, promotedFields, className));
         }
 
         // Collect and sort all top-level statements
@@ -346,13 +459,31 @@ public static class FullJsToCSharpTranspiler
         sb.AppendLine("using TypedJint;");
         sb.AppendLine("using TypedJint.Runtime;");
         sb.AppendLine("using static TypedJint.Runtime.JavaScriptRuntime;");
-        sb.AppendLine("using static TypedJint.JavaScriptRuntimeEngine;");
         sb.AppendLine();
         sb.AppendLine($"public sealed class {className}");
         sb.AppendLine("{");
         sb.AppendLine("    public object? Invoke(string functionName, params object?[] arguments)");
         sb.AppendLine("    {");
-        sb.AppendLine("        var method = this.GetType().GetMethod(functionName);");
+        sb.AppendLine("        var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance;");
+        sb.AppendLine("        var prop = this.GetType().GetProperty(functionName, flags);");
+        sb.AppendLine("        if (prop != null)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            var val = prop.GetValue(null);"); // Static property
+        sb.AppendLine("            if (val != null)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                return JavaScriptRuntimeEngine.Invoke((object?)val, arguments);");
+        sb.AppendLine("            }");
+        sb.AppendLine("        }");
+        sb.AppendLine("        var field = this.GetType().GetField(functionName, flags);");
+        sb.AppendLine("        if (field != null)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            var val = field.GetValue(null);"); // Static field
+        sb.AppendLine("            if (val != null)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                return JavaScriptRuntimeEngine.Invoke((object?)val, arguments);");
+        sb.AppendLine("            }");
+        sb.AppendLine("        }");
+        sb.AppendLine("        var method = this.GetType().GetMethod(functionName, flags);");
         sb.AppendLine("        if (method != null)");
         sb.AppendLine("        {");
         sb.AppendLine("            var parameters = method.GetParameters();");
@@ -363,6 +494,18 @@ public static class FullJsToCSharpTranspiler
         sb.AppendLine("                else invokeArgs[i] = parameters[i].HasDefaultValue ? parameters[i].DefaultValue : null;");
         sb.AppendLine("            }");
         sb.AppendLine("            return method.Invoke(this, invokeArgs);");
+        sb.AppendLine("        }");
+        sb.AppendLine("        var methodFn = this.GetType().GetMethod(functionName + \"_fn\", flags);");
+        sb.AppendLine("        if (methodFn != null)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            var parameters = methodFn.GetParameters();");
+        sb.AppendLine("            var invokeArgs = new object?[parameters.Length];");
+        sb.AppendLine("            for (int i = 0; i < invokeArgs.Length; i++)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                if (i < arguments.Length) invokeArgs[i] = arguments[i];");
+        sb.AppendLine("                else invokeArgs[i] = parameters[i].HasDefaultValue ? parameters[i].DefaultValue : null;");
+        sb.AppendLine("            }");
+        sb.AppendLine("            return methodFn.Invoke(this, invokeArgs);");
         sb.AppendLine("        }");
         sb.AppendLine("        throw new MissingMethodException(this.GetType().FullName, functionName);");
         sb.AppendLine("    }");
@@ -440,10 +583,11 @@ public static class FullJsToCSharpTranspiler
             _currentCollectedClasses = null;
             _currentPrototypeProperties = null;
             _currentStaticProperties = null;
+            _fileClassName = null;
         }
     }
 
-    private static string TranspileClass(ClassDeclaration classDecl, List<ClassDeclaration> collectedClasses, string fileClassName)
+    private static string TranspileClass(ClassDeclaration classDecl, List<ClassDeclaration> collectedClasses, HashSet<string> promotedFields, string fileClassName)
     {
         _nestedClassDepth++;
         try
@@ -491,6 +635,7 @@ public static class FullJsToCSharpTranspiler
             }
             sb.AppendLine();
             sb.AppendLine("    {");
+
 
             foreach (var prop in properties)
             {
@@ -564,6 +709,7 @@ public static class FullJsToCSharpTranspiler
                     sb.Append("        public ").Append(SanitizeIdentifier(classIdName, fileClassName))
                       .Append("(").Append(parentParamsSig).Append(")").Append(baseCallStr).AppendLine()
                       .AppendLine("        {");
+                    sb.Append(GeneratePrototypeBinding(classIdName, collectedClasses, "            "));
                     sb.Append(GenerateShadowedMethodsInitialization(className, collectedClasses, "            "));
                     sb.AppendLine("        }");
                 }
@@ -640,7 +786,7 @@ public static class FullJsToCSharpTranspiler
                                 var getterValue = getter.Value;
                                 if (getterValue != null)
                                 {
-                                    var returnedExpr = ExtractReturnedExpression(getterValue.Body, collectedClasses, new HashSet<string>(), new HashSet<string>(), className);
+                                    var returnedExpr = ExtractReturnedExpression(getterValue.Body, collectedClasses, new HashSet<string>(), promotedFields, className);
                                     if (returnedExpr != null)
                                     {
                                         sb.AppendLine($"            get => {returnedExpr};");
@@ -649,7 +795,7 @@ public static class FullJsToCSharpTranspiler
                                     {
                                         sb.AppendLine("            get");
                                         var getterParamsList = getterValue.Params.Select(p => FormatParameterName(p, collectedClasses, new HashSet<string>(), className)).ToList();
-                                        var bodyStr = TranspileFunctionBody(getterValue.Body, 3, collectedClasses, new HashSet<string>(), getterValue.Params, getterParamsList, new HashSet<string>(), className);
+                                        var bodyStr = TranspileFunctionBody(getterValue.Body, 3, collectedClasses, new HashSet<string>(), getterValue.Params, getterParamsList, promotedFields, className);
                                         sb.AppendLine(bodyStr);
                                     }
                                 }
@@ -673,7 +819,7 @@ public static class FullJsToCSharpTranspiler
                                         }
                                     }
                                     
-                                    var bodyStr = TranspileFunctionBody(setterValue.Body, 4, collectedClasses, new HashSet<string>(), setterValue.Params, setterParamsList, new HashSet<string>(), className, isSetter: true);
+                                    var bodyStr = TranspileFunctionBody(setterValue.Body, 4, collectedClasses, new HashSet<string>(), setterValue.Params, setterParamsList, promotedFields, className, isSetter: true);
                                     var bodyLines = bodyStr.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
                                     if (bodyLines.Length > 2 && bodyLines[0].Trim() == "{")
                                     {
@@ -701,7 +847,7 @@ public static class FullJsToCSharpTranspiler
                             var superCall = FindSuperCall(methodValue.Body);
                             if (superCall != null)
                             {
-                                var baseArgs = string.Join(", ", superCall.Arguments.Select(e => $"(object?)({TranspileExpression(e, collectedClasses, new HashSet<string>(), new HashSet<string>(), className)})"));
+                                var baseArgs = string.Join(", ", superCall.Arguments.Select(e => $"(object?)({TranspileExpression(e, collectedClasses, new HashSet<string>(parametersList), promotedFields, className)})"));
                                 baseCallStr = $" : base({baseArgs})";
                             }
                             else
@@ -710,7 +856,7 @@ public static class FullJsToCSharpTranspiler
                             }
                         }
                         sb.Append("        public ").Append(SanitizeIdentifier(classIdName, fileClassName)).Append("(").Append(string.Join(", ", parameters)).Append(")").AppendLine(baseCallStr);
-                        sb.AppendLine(TranspileFunctionBody(methodValue.Body, 2, collectedClasses, new HashSet<string>(), methodValue.Params, parametersList, new HashSet<string>(), className, isConstructor: true));
+                        sb.AppendLine(TranspileFunctionBody(methodValue.Body, 2, collectedClasses, new HashSet<string>(), methodValue.Params, parametersList, promotedFields, className, isConstructor: true));
                     }
                     else
                     {
@@ -734,7 +880,7 @@ public static class FullJsToCSharpTranspiler
                         _isStaticScope = method.Static;
                         try
                         {
-                            sb.AppendLine(TranspileFunctionBody(methodValue.Body, 2, collectedClasses, new HashSet<string>(), methodValue.Params, parametersList, new HashSet<string>(), className));
+                            sb.AppendLine(TranspileFunctionBody(methodValue.Body, 2, collectedClasses, new HashSet<string>(), methodValue.Params, parametersList, promotedFields, className));
                         }
                         finally
                         {
@@ -765,6 +911,7 @@ public static class FullJsToCSharpTranspiler
     private static string TranspileFunction(FunctionDeclaration funcDecl, List<ClassDeclaration> collectedClasses, HashSet<string> promotedFields, string className)
     {
         var name = funcDecl.Id is Identifier id ? id.Name : "AnonymousFunc";
+        var methodName = promotedFields.Contains(name) ? name + "_fn" : name;
         var parametersList = funcDecl.Params.Select(p => FormatParameterName(p, collectedClasses, new HashSet<string>(), className)).ToList();
         
         string parameters;
@@ -778,7 +925,7 @@ public static class FullJsToCSharpTranspiler
         }
 
         var sb = new StringBuilder();
-        sb.Append("    public dynamic? ").Append(SanitizeIdentifier(name, className)).Append("(").Append(parameters).AppendLine(")");
+        sb.Append("    public dynamic? ").Append(SanitizeIdentifier(methodName, className)).Append("(").Append(parameters).AppendLine(")");
         sb.AppendLine(TranspileFunctionBody(funcDecl.Body, 1, collectedClasses, new HashSet<string>(), funcDecl.Params, parametersList, promotedFields, className));
         return sb.ToString();
     }
@@ -852,6 +999,15 @@ public static class FullJsToCSharpTranspiler
         {
             foreach (var paramNode in parameterNodes)
             {
+                if (paramNode is AssignmentPattern assignPat && assignPat.Left is Identifier idLeft)
+                {
+                    var resolvedName = ResolveIdentifier(idLeft.Name, localScope, promotedFields, className);
+                    var defaultValue = TranspileExpression((Expression)assignPat.Right, collectedClasses, localScope, promotedFields, className);
+                    sb.Append(pad).AppendLine($"    if ({resolvedName} == null) {resolvedName} = {defaultValue};");
+                }
+            }
+            foreach (var paramNode in parameterNodes)
+            {
                 if (paramNode is ArrayPattern || paramNode is ObjectPattern)
                 {
                     var ids = new List<string>();
@@ -907,12 +1063,30 @@ public static class FullJsToCSharpTranspiler
             }
         }
 
-        if (!isArrow && !isConstructor && (parameters == null || !parameters.Contains("arguments")))
+        if (_nestedClassDepth == 0)
+        {
+            sb.Append(pad).AppendLine("    dynamic? self = JavaScriptRuntimeEngine.CurrentThis;");
+        }
+
+        if (isConstructor)
+        {
+            var cls = collectedClasses.FirstOrDefault(c => c.Id != null && c.Id.Name == className);
+            if (cls != null && cls.SuperClass is Identifier superId)
+            {
+                if (!IsClassName(superId.Name, collectedClasses, new HashSet<string>()))
+                {
+                    sb.Append(pad).AppendLine($"    dynamic? super = JavaScriptRuntime.GetGlobal(\"{superId.Name}\");");
+                }
+            }
+            sb.Append(GeneratePrototypeBinding(className, collectedClasses, pad + "    "));
+        }
+
+        if (!isArrow && (parameters == null || !parameters.Contains("arguments")))
         {
             uniqueArgsName = "arguments_" + Guid.NewGuid().ToString("N");
             ArgumentsNames.Push(uniqueArgsName);
             pushedArgs = true;
-            sb.Append(pad).AppendLine($"    dynamic? {uniqueArgsName} = new List<dynamic?> {{ {(parameters == null ? "" : string.Join(", ", parameters.Select(p => SanitizeIdentifier(p, className))))} }};");
+            sb.Append(pad).AppendLine($"    dynamic?[] {uniqueArgsName} = new dynamic?[] {{ {(parameters == null ? "" : string.Join(", ", parameters.Select(p => SanitizeIdentifier(p, className))))} }};");
             localScope.Add("arguments");
         }
 
@@ -932,6 +1106,10 @@ public static class FullJsToCSharpTranspiler
              int paramCount = Math.Max(10, lf.Params.Count);
              string delegateType = "Func<" + string.Join(", ", Enumerable.Repeat("dynamic?", paramCount + 1)) + ">";
              sb.Append(pad).AppendLine($"    {sanitized} = new {delegateType}({sanitized}_local);");
+             if (promotedFields.Contains(name) && !string.IsNullOrEmpty(_fileClassName))
+             {
+                 sb.Append(pad).AppendLine($"    {_fileClassName}.{sanitized} = {sanitized};");
+             }
          }
         foreach (var stmt in body.Body)
         {
@@ -1096,6 +1274,142 @@ public static class FullJsToCSharpTranspiler
                     EnclosingConstructs.Pop();
                 }
 
+            case ForInStatement forIn:
+            {
+                EnclosingConstructs.Push("loop");
+                try
+                {
+                    var rightExpr = TranspileExpression(forIn.Right, collectedClasses, localScope, promotedFields, className);
+                    var forInBuilder = new StringBuilder();
+                    var tempLoopVar = $"_loopItem_{Guid.NewGuid().ToString("N")}";
+                    forInBuilder.Append(pad).AppendLine($"foreach (var {tempLoopVar} in JavaScriptRuntime.GetKeys({rightExpr}))");
+                    forInBuilder.Append(pad).AppendLine("{");
+                    
+                    var loopBodyPad = pad + "    ";
+                    string loopVarDecl = "";
+                    string destructuringCode = "";
+                    if (forIn.Left is VariableDeclaration vd && vd.Declarations.Count > 0)
+                    {
+                        var decl = vd.Declarations[0];
+                        if (decl.Id is Identifier id)
+                        {
+                            var resolvedLoopVar = ResolveIdentifier(id.Name, localScope, promotedFields, className);
+                            loopVarDecl = $"{resolvedLoopVar} = {tempLoopVar}";
+                        }
+                        else
+                        {
+                            var tempVarName = $"_tempLoop_{Guid.NewGuid().ToString("N")}";
+                            loopVarDecl = $"dynamic? {tempVarName} = {tempLoopVar}";
+                            destructuringCode = TranspileDestructuring(decl.Id, tempVarName, collectedClasses, localScope, promotedFields, className) + ";";
+                        }
+                    }
+                    else if (forIn.Left is Identifier idL)
+                    {
+                        var resolvedLoopVar = ResolveIdentifier(idL.Name, localScope, promotedFields, className);
+                        loopVarDecl = $"{resolvedLoopVar} = {tempLoopVar}";
+                    }
+                    else
+                    {
+                        var tempVarName = $"_tempLoop_{Guid.NewGuid().ToString("N")}";
+                        loopVarDecl = $"dynamic? {tempVarName} = {tempLoopVar}";
+                        destructuringCode = TranspileDestructuring(forIn.Left, tempVarName, collectedClasses, localScope, promotedFields, className) + ";";
+                    }
+
+                    forInBuilder.Append(loopBodyPad).AppendLine($"{loopVarDecl};");
+                    if (!string.IsNullOrEmpty(destructuringCode))
+                    {
+                        forInBuilder.Append(loopBodyPad).AppendLine(destructuringCode);
+                    }
+
+                    var bodyCode = TranspileStatementBody(forIn.Body, indent + 1, collectedClasses, localScope, promotedFields, className, isConstructor, isSetter);
+                    var trimmedBody = bodyCode.Trim();
+                    if (trimmedBody.StartsWith("{") && trimmedBody.EndsWith("}"))
+                    {
+                        var innerBody = trimmedBody.Substring(1, trimmedBody.Length - 2).TrimEnd();
+                        forInBuilder.AppendLine(innerBody);
+                    }
+                    else
+                    {
+                        forInBuilder.AppendLine(bodyCode);
+                    }
+
+                    forInBuilder.Append(pad).Append("}");
+                    return forInBuilder.ToString();
+                }
+                finally
+                {
+                    EnclosingConstructs.Pop();
+                }
+            }
+
+            case ForOfStatement forOf:
+            {
+                EnclosingConstructs.Push("loop");
+                try
+                {
+                    var rightExpr = TranspileExpression(forOf.Right, collectedClasses, localScope, promotedFields, className);
+                    var forOfBuilder = new StringBuilder();
+                    var tempLoopVar = $"_loopItem_{Guid.NewGuid().ToString("N")}";
+                    forOfBuilder.Append(pad).AppendLine($"foreach (var {tempLoopVar} in JavaScriptRuntime.GetEnumerable({rightExpr}))");
+                    forOfBuilder.Append(pad).AppendLine("{");
+                    
+                    var loopBodyPad = pad + "    ";
+                    string loopVarDecl = "";
+                    string destructuringCode = "";
+                    if (forOf.Left is VariableDeclaration vd && vd.Declarations.Count > 0)
+                    {
+                        var decl = vd.Declarations[0];
+                        if (decl.Id is Identifier id)
+                        {
+                            var resolvedLoopVar = ResolveIdentifier(id.Name, localScope, promotedFields, className);
+                            loopVarDecl = $"{resolvedLoopVar} = {tempLoopVar}";
+                        }
+                        else
+                        {
+                            var tempVarName = $"_tempLoop_{Guid.NewGuid().ToString("N")}";
+                            loopVarDecl = $"dynamic? {tempVarName} = {tempLoopVar}";
+                            destructuringCode = TranspileDestructuring(decl.Id, tempVarName, collectedClasses, localScope, promotedFields, className) + ";";
+                        }
+                    }
+                    else if (forOf.Left is Identifier idL)
+                    {
+                        var resolvedLoopVar = ResolveIdentifier(idL.Name, localScope, promotedFields, className);
+                        loopVarDecl = $"{resolvedLoopVar} = {tempLoopVar}";
+                    }
+                    else
+                    {
+                        var tempVarName = $"_tempLoop_{Guid.NewGuid().ToString("N")}";
+                        loopVarDecl = $"dynamic? {tempVarName} = {tempLoopVar}";
+                        destructuringCode = TranspileDestructuring(forOf.Left, tempVarName, collectedClasses, localScope, promotedFields, className) + ";";
+                    }
+
+                    forOfBuilder.Append(loopBodyPad).AppendLine($"{loopVarDecl};");
+                    if (!string.IsNullOrEmpty(destructuringCode))
+                    {
+                        forOfBuilder.Append(loopBodyPad).AppendLine(destructuringCode);
+                    }
+
+                    var bodyCode = TranspileStatementBody(forOf.Body, indent + 1, collectedClasses, localScope, promotedFields, className, isConstructor, isSetter);
+                    var trimmedBody = bodyCode.Trim();
+                    if (trimmedBody.StartsWith("{") && trimmedBody.EndsWith("}"))
+                    {
+                        var innerBody = trimmedBody.Substring(1, trimmedBody.Length - 2).TrimEnd();
+                        forOfBuilder.AppendLine(innerBody);
+                    }
+                    else
+                    {
+                        forOfBuilder.AppendLine(bodyCode);
+                    }
+
+                    forOfBuilder.Append(pad).Append("}");
+                    return forOfBuilder.ToString();
+                }
+                finally
+                {
+                    EnclosingConstructs.Pop();
+                }
+            }
+
             case BreakStatement:
                 if (EnclosingConstructs.Count > 0 && EnclosingConstructs.Peek() == "switch")
                 {
@@ -1238,7 +1552,7 @@ public static class FullJsToCSharpTranspiler
                     nfBuilder.Append(bodyPad).AppendLine($"dynamic? {SanitizeIdentifier(nfParamsList[i], className)} = _p{i};");
                 }
                 var argsStr = string.Join(", ", Enumerable.Range(0, paramCount).Select(i => $"_p{i}"));
-                nfBuilder.Append(bodyPad).AppendLine($"dynamic? arguments = new List<dynamic?> {{ {argsStr} }};");
+                nfBuilder.Append(bodyPad).AppendLine($"dynamic?[] arguments = new dynamic?[] {{ {argsStr} }};");
                 
                 var bodyContent = TranspileFunctionBody(nestedFunc.Body, indent + 1, collectedClasses, localScope, nestedFunc.Params, nfParamsList, promotedFields, className);
                 var bodyLines = bodyContent.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
@@ -1292,16 +1606,16 @@ public static class FullJsToCSharpTranspiler
         var result = expr switch
         {
             Literal lit => FormatLiteral(lit),
-            Identifier id => IsClassName(id.Name, collectedClasses, localScope) ? $"((dynamic)JavaScriptRuntimeEngine.CurrentEngine.Jint.GetValue(\"{id.Name}\"))" : ResolveIdentifier(id.Name, localScope, promotedFields, className),
-            ThisExpression => _isStaticScope ? $"((dynamic)JavaScriptRuntimeEngine.CurrentEngine.Jint.GetValue(\"{className}\"))" : (_nestedClassDepth > 0 ? "this" : "self"),
-            Super => (HasStaticSuperClass(className, collectedClasses) ? "base" : "this"),
+            Identifier id => IsClassName(id.Name, collectedClasses, localScope) ? $"typeof({SanitizeIdentifier(id.Name, className)})" : ResolveIdentifier(id.Name, localScope, promotedFields, className),
+            ThisExpression => _isStaticScope ? $"JavaScriptRuntime.GetGlobal(\"{className}\")" : (_nestedClassDepth > 0 ? "this" : "self"),
+            Super => (HasStaticSuperClass(className, collectedClasses) ? "base" : "super"),
             MemberExpression mem => FormatMemberExpression(mem, collectedClasses, localScope, promotedFields, className, isCallee),
             AssignmentExpression assign => FormatAssignmentExpression(assign, collectedClasses, localScope, promotedFields, className, isStatement),
             CallExpression call => FormatCallExpression(call, collectedClasses, localScope, promotedFields, className),
             LogicalExpression log => log.Operator switch
             {
-                Operator.LogicalAnd => $"LogicalAnd({TranspileExpression(log.Left, collectedClasses, localScope, promotedFields, className)}, {TranspileExpression(log.Right, collectedClasses, localScope, promotedFields, className)})",
-                Operator.LogicalOr => $"LogicalOr({TranspileExpression(log.Left, collectedClasses, localScope, promotedFields, className)}, {TranspileExpression(log.Right, collectedClasses, localScope, promotedFields, className)})",
+                Operator.LogicalAnd => $"JavaScriptRuntimeEngine.LogicalAnd({TranspileExpression(log.Left, collectedClasses, localScope, promotedFields, className)}, (Func<object?>)(() => {TranspileExpression(log.Right, collectedClasses, localScope, promotedFields, className)}))",
+                Operator.LogicalOr => $"JavaScriptRuntimeEngine.LogicalOr({TranspileExpression(log.Left, collectedClasses, localScope, promotedFields, className)}, (Func<object?>)(() => {TranspileExpression(log.Right, collectedClasses, localScope, promotedFields, className)}))",
                 _ => $"({TranspileExpression(log.Left, collectedClasses, localScope, promotedFields, className)} {MapOperator(log.Operator)} {TranspileExpression(log.Right, collectedClasses, localScope, promotedFields, className)})"
             },
             BinaryExpression bin => bin.Operator switch
@@ -1316,8 +1630,14 @@ public static class FullJsToCSharpTranspiler
                 Operator.BitwiseXor => $"unchecked(((int)({TranspileExpression(bin.Left, collectedClasses, localScope, promotedFields, className)}) ^ (int)({TranspileExpression(bin.Right, collectedClasses, localScope, promotedFields, className)})))",
                 Operator.LeftShift => $"unchecked(((int)({TranspileExpression(bin.Left, collectedClasses, localScope, promotedFields, className)}) << (int)({TranspileExpression(bin.Right, collectedClasses, localScope, promotedFields, className)})))",
                 Operator.RightShift => $"unchecked(((int)({TranspileExpression(bin.Left, collectedClasses, localScope, promotedFields, className)}) >> (int)({TranspileExpression(bin.Right, collectedClasses, localScope, promotedFields, className)})))",
-                Operator.Equality or Operator.StrictEquality or Operator.Inequality or Operator.StrictInequality =>
-                    $"(((dynamic)({TranspileExpression(bin.Left, collectedClasses, localScope, promotedFields, className)})) {MapOperator(bin.Operator)} ((dynamic)({TranspileExpression(bin.Right, collectedClasses, localScope, promotedFields, className)})))",
+                Operator.Equality =>
+                    $"JavaScriptRuntime.AreEqual({TranspileExpression(bin.Left, collectedClasses, localScope, promotedFields, className)}, {TranspileExpression(bin.Right, collectedClasses, localScope, promotedFields, className)})",
+                Operator.StrictEquality =>
+                    $"JavaScriptRuntime.AreStrictEqual({TranspileExpression(bin.Left, collectedClasses, localScope, promotedFields, className)}, {TranspileExpression(bin.Right, collectedClasses, localScope, promotedFields, className)})",
+                Operator.Inequality =>
+                    $"(!JavaScriptRuntime.AreEqual({TranspileExpression(bin.Left, collectedClasses, localScope, promotedFields, className)}, {TranspileExpression(bin.Right, collectedClasses, localScope, promotedFields, className)}))",
+                Operator.StrictInequality =>
+                    $"(!JavaScriptRuntime.AreStrictEqual({TranspileExpression(bin.Left, collectedClasses, localScope, promotedFields, className)}, {TranspileExpression(bin.Right, collectedClasses, localScope, promotedFields, className)}))",
                 _ => $"({TranspileExpression(bin.Left, collectedClasses, localScope, promotedFields, className)} {MapOperator(bin.Operator)} {TranspileExpression(bin.Right, collectedClasses, localScope, promotedFields, className)})"
             },
             UpdateExpression upd => FormatUpdateExpression(upd, collectedClasses, localScope, promotedFields, className),
@@ -1381,6 +1701,11 @@ public static class FullJsToCSharpTranspiler
         {
             return $"new {calleeIdErr.Name}({string.Join(", ", call.Arguments.Select(e => TranspileExpression(e, collectedClasses, localScope, promotedFields, className)))})";
         }
+        if (call.Callee is Identifier calleeIdBuiltin && (calleeIdBuiltin.Name == "parseInt" || calleeIdBuiltin.Name == "parseFloat" || calleeIdBuiltin.Name == "isNaN" || calleeIdBuiltin.Name == "isFinite"))
+        {
+            var argsStrBuiltin = string.Join(", ", call.Arguments.Select(e => TranspileExpression(e, collectedClasses, localScope, promotedFields, className)));
+            return $"{calleeIdBuiltin.Name}({argsStrBuiltin})";
+        }
         if (call.Callee is Identifier calleeIdLocal && LocalFunctionsStack.Count > 0 && LocalFunctionsStack.Peek().Contains(calleeIdLocal.Name))
         {
             var localCalleeStr = SanitizeIdentifier(calleeIdLocal.Name, className) + "_local";
@@ -1414,15 +1739,7 @@ public static class FullJsToCSharpTranspiler
             {
                 var argsStrMath = string.Join(", ", call.Arguments.Select(e => TranspileExpression(e, collectedClasses, localScope, promotedFields, className)));
                 if (mathMethod == "Random") return "Random.Shared.NextDouble()";
-                if (mathMethod == "Max" || mathMethod == "Min")
-                {
-                    if (call.Arguments.Count == 2)
-                    {
-                        return $"Math.{mathMethod}({argsStrMath})";
-                    }
-                    return $"JavaScriptRuntime.{mathMethod}({argsStrMath})";
-                }
-                return $"Math.{mathMethod}({argsStrMath})";
+                return $"JavaScriptRuntime.{mathMethod}({argsStrMath})";
             }
         }
         if (call.Callee is MemberExpression mem)
@@ -1467,6 +1784,15 @@ public static class FullJsToCSharpTranspiler
                     var baseArgsStr = string.Join(", ", call.Arguments.Select(e => $"(object?)({TranspileExpression(e, collectedClasses, localScope, promotedFields, className)})"));
                     return $"base.{SanitizeIdentifier(methodName, className)}({baseArgsStr})";
                 }
+                if (objStr == "super")
+                {
+                    var superClassName = GetSuperClassName(className, collectedClasses);
+                    if (superClassName != null)
+                    {
+                        var arrayDeclSuper = string.IsNullOrEmpty(argsStr) ? "System.Array.Empty<object?>()" : $"new object?[] {{ {argsStr} }}";
+                        return $"JavaScriptRuntimeEngine.InvokeSuperMethod(this, \"{superClassName}\", \"{methodName}\", {arrayDeclSuper})";
+                    }
+                }
                 if (objStr == "this" || objStr == "self")
                 {
                     if (HasMethodWithParamCount(className, methodName, call.Arguments.Count, collectedClasses))
@@ -1476,7 +1802,7 @@ public static class FullJsToCSharpTranspiler
                     var arrayDeclThis = string.IsNullOrEmpty(argsStr) ? "System.Array.Empty<object?>()" : $"new object?[] {{ {argsStr} }}";
                     return $"JavaScriptRuntimeEngine.InvokeMethod({objStr}, \"{methodName}\", {arrayDeclThis})";
                 }
-                else if (IsClassName(objStr, collectedClasses, localScope) || objStr.StartsWith(className))
+                else if (IsClassName(objStr, collectedClasses, localScope) || objStr == className)
                 {
                     if (HasStaticPropertyOrField(objStr, methodName, collectedClasses))
                     {
@@ -1485,7 +1811,7 @@ public static class FullJsToCSharpTranspiler
                     }
                     else
                     {
-                        var jintObj = $"((dynamic)JavaScriptRuntimeEngine.CurrentEngine.Jint.GetValue(\"{objStr}\"))";
+                        var jintObj = $"JavaScriptRuntime.GetGlobal(\"{objStr}\")";
                         var arrayDeclClassName = string.IsNullOrEmpty(argsStr) ? "System.Array.Empty<object?>()" : $"new object?[] {{ {argsStr} }}";
                         return $"JavaScriptRuntimeEngine.InvokeMethod({jintObj}, \"{methodName}\", {arrayDeclClassName})";
                     }
@@ -1522,7 +1848,8 @@ public static class FullJsToCSharpTranspiler
             }
             return $"{calleeStr}.Invoke({string.Join(", ", args)})";
         }
-        return $"{calleeStr}({string.Join(", ", call.Arguments.Select(e => TranspileExpression(e, collectedClasses, localScope, promotedFields, className)))})";
+        var arrayDeclGeneric = call.Arguments.Count == 0 ? "System.Array.Empty<object?>()" : $"new object?[] {{ {string.Join(", ", call.Arguments.Select(e => TranspileExpression(e, collectedClasses, localScope, promotedFields, className)))} }}";
+        return $"JavaScriptRuntimeEngine.Invoke((object?)({calleeStr}), {arrayDeclGeneric})";
     }
 
     private static string FormatAssignmentExpression(AssignmentExpression assign, List<ClassDeclaration> collectedClasses, HashSet<string> localScope, HashSet<string> promotedFields, string className, bool isStatement)
@@ -1585,7 +1912,7 @@ public static class FullJsToCSharpTranspiler
                 {
                     isLValue = HasInstancePropertyOrField(className, rawPropName, collectedClasses);
                 }
-                else if (IsClassName(objStr, collectedClasses, localScope) || objStr.StartsWith(className))
+                else if (IsClassName(objStr, collectedClasses, localScope) || objStr == className)
                 {
                     isLValue = true;
                 }
@@ -1651,11 +1978,11 @@ public static class FullJsToCSharpTranspiler
             {
                 if (assign.Operator == Operator.Assignment)
                 {
-                    result = $"JavaScriptRuntimeEngine.CurrentEngine.Jint.SetValue(\"{id.Name}\", {valStr})";
+                    result = $"JavaScriptRuntime.SetGlobal(\"{id.Name}\", {valStr})";
                 }
                 else if (assign.Operator == Operator.UnsignedRightShiftAssignment)
                 {
-                    result = $"JavaScriptRuntimeEngine.CurrentEngine.Jint.SetValue(\"{id.Name}\", JavaScriptRuntime.UnsignedRightShift(JavaScriptRuntimeEngine.CurrentEngine.Jint.GetValue(\"{id.Name}\"), {valStr}))";
+                    result = $"JavaScriptRuntime.SetGlobal(\"{id.Name}\", JavaScriptRuntime.UnsignedRightShift(JavaScriptRuntime.GetGlobal(\"{id.Name}\"), {valStr}))";
                 }
                 else
                 {
@@ -1673,7 +2000,7 @@ public static class FullJsToCSharpTranspiler
                         Operator.RightShiftAssignment => ">>",
                         _ => "="
                     };
-                    result = $"JavaScriptRuntimeEngine.CurrentEngine.Jint.SetValue(\"{id.Name}\", (dynamic)JavaScriptRuntimeEngine.CurrentEngine.Jint.GetValue(\"{id.Name}\") {binOp} {valStr})";
+                    result = $"JavaScriptRuntime.SetGlobal(\"{id.Name}\", (dynamic)JavaScriptRuntime.GetGlobal(\"{id.Name}\") {binOp} {valStr})";
                 }
             }
         }
@@ -1711,6 +2038,14 @@ public static class FullJsToCSharpTranspiler
         if (un.Operator == Operator.BitwiseNot)
         {
             return $"unchecked((~(int)({TranspileExpression(un.Argument, collectedClasses, localScope, promotedFields, className)})))";
+        }
+        if (un.Operator == Operator.UnaryPlus)
+        {
+            return $"JavaScriptRuntime.ToNumber({TranspileExpression(un.Argument, collectedClasses, localScope, promotedFields, className)})";
+        }
+        if (un.Operator == Operator.UnaryNegation)
+        {
+            return $"(-JavaScriptRuntime.ToNumber({TranspileExpression(un.Argument, collectedClasses, localScope, promotedFields, className)}))";
         }
         return $"({MapUnaryOperator(un.Operator)} {TranspileExpression(un.Argument, collectedClasses, localScope, promotedFields, className)})";
     }
@@ -1801,14 +2136,14 @@ public static class FullJsToCSharpTranspiler
                 }
                 return $"JavaScriptRuntimeEngine.GetProperty({obj}, \"{rawPropName}\")";
             }
-            if (IsClassName(obj, collectedClasses, localScope) || obj.StartsWith(className))
+            if (IsClassName(obj, collectedClasses, localScope) || obj == className)
             {
                 if (HasStaticPropertyOrField(obj, rawPropName, collectedClasses))
                 {
                     var sanitizedProp = mem.Property is Identifier propId3 ? SanitizeIdentifier(propId3.Name, className) : rawPropName;
                     return $"{obj}.{sanitizedProp}";
                 }
-                return $"JavaScriptRuntimeEngine.GetProperty(((dynamic)JavaScriptRuntimeEngine.CurrentEngine.Jint.GetValue(\"{obj}\")), \"{rawPropName}\")";
+                return $"JavaScriptRuntimeEngine.GetProperty(JavaScriptRuntime.GetGlobal(\"{obj}\"), \"{rawPropName}\")";
             }
             return $"JavaScriptRuntimeEngine.GetProperty({obj}, \"{rawPropName}\")";
         }
@@ -1838,7 +2173,7 @@ public static class FullJsToCSharpTranspiler
             {
                 isLValue = HasInstancePropertyOrField(className, rawPropName, collectedClasses);
             }
-            else if (IsClassName(obj, collectedClasses, localScope) || obj.StartsWith(className))
+            else if (IsClassName(obj, collectedClasses, localScope) || obj == className)
             {
                 isLValue = true;
             }
@@ -1993,6 +2328,10 @@ public static class FullJsToCSharpTranspiler
         Operator.GreaterThanOrEqual => ">=",
         Operator.LogicalAnd => "&&",
         Operator.LogicalOr => "||",
+        Operator.NullishCoalescing => "??",
+        Operator.LogicalAndAssignment => "&&=",
+        Operator.LogicalOrAssignment => "||=",
+        Operator.NullishCoalescingAssignment => "??=",
         Operator.Assignment => "=",
         Operator.AdditionAssignment => "+=",
         Operator.SubtractionAssignment => "-=",
@@ -2135,7 +2474,7 @@ public static class FullJsToCSharpTranspiler
         if (value == null) return string.Empty;
         if (IsClassName(value, _currentCollectedClasses ?? new List<ClassDeclaration>(), localScope))
         {
-            return $"((dynamic)JavaScriptRuntimeEngine.CurrentEngine.Jint.GetValue(\"{value}\"))";
+            return $"JavaScriptRuntime.GetGlobal(\"{value}\")";
         }
         if (value == "arguments" && ArgumentsNames.Count > 0) return ArgumentsNames.Peek();
         if (value == "undefined") return "null";
@@ -2150,19 +2489,22 @@ public static class FullJsToCSharpTranspiler
         {
             return SanitizeIdentifier(value, className);
         }
-        if (TopLevelFunctions.Contains(value))
+        if (CurrentAllFunctions.Contains(value) && !localScope.Contains(value))
         {
-            return $"this.{SanitizeIdentifier(value, className)}";
+            var targetClass = _fileClassName ?? className;
+            var propName = promotedFields.Contains(value) ? value : value + "_var";
+            return $"{targetClass}.{SanitizeIdentifier(propName, targetClass)}";
         }
         if (promotedFields.Contains(value) && !localScope.Contains(value))
         {
-            return $"{className}.{SanitizeIdentifier(value, className)}";
+            var targetClass = _fileClassName ?? className;
+            return $"{targetClass}.{SanitizeIdentifier(value, targetClass)}";
         }
         if (TemplateGlobals.Contains(value))
         {
             return value;
         }
-        return $"((dynamic)JavaScriptRuntimeEngine.CurrentEngine.Jint.GetValue(\"{value}\"))";
+        return $"JavaScriptRuntime.GetGlobal(\"{value}\")";
     }
 
     private static void ScanDeclaredVariables(Node node, HashSet<string> vars)
@@ -2223,6 +2565,11 @@ public static class FullJsToCSharpTranspiler
             ScanDeclaredVariables(forIn.Left, vars);
             ScanDeclaredVariables(forIn.Body, vars);
         }
+        else if (node is ForOfStatement forOf)
+        {
+            ScanDeclaredVariables(forOf.Left, vars);
+            ScanDeclaredVariables(forOf.Body, vars);
+        }
         else if (node is TryStatement tryStmt)
         {
             ScanDeclaredVariables(tryStmt.Block, vars);
@@ -2240,6 +2587,7 @@ public static class FullJsToCSharpTranspiler
 
     private static bool IsClassName(string name, List<ClassDeclaration> classes, HashSet<string> localScope)
     {
+        if (localScope != null && localScope.Contains(name)) return false;
         return classes.Any(c => c.Id != null && c.Id.Name == name);
     }
 
@@ -2260,7 +2608,7 @@ public static class FullJsToCSharpTranspiler
             }
             else
             {
-                assignments.Add($"JavaScriptRuntimeEngine.CurrentEngine.Jint.SetValue(\"{id.Name}\", {sourceExpr});");
+                assignments.Add($"JavaScriptRuntime.SetGlobal(\"{id.Name}\", {sourceExpr});");
             }
         }
         else if (pattern is ArrayPattern arrPat)
@@ -2279,7 +2627,7 @@ public static class FullJsToCSharpTranspiler
                         }
                         else
                         {
-                            assignments.Add($"JavaScriptRuntimeEngine.CurrentEngine.Jint.SetValue(\"{idRest.Name}\", JavaScriptRuntime.SliceList({sourceExpr}, {i}));");
+                            assignments.Add($"JavaScriptRuntime.SetGlobal(\"{idRest.Name}\", JavaScriptRuntime.SliceList({sourceExpr}, {i}));");
                         }
                     }
                 }
@@ -2294,7 +2642,7 @@ public static class FullJsToCSharpTranspiler
                         }
                         else
                         {
-                            assignments.Add($"JavaScriptRuntimeEngine.CurrentEngine.Jint.SetValue(\"{idLeft.Name}\", JavaScriptRuntime.GetComputedProperty({sourceExpr}, {i}.0) ?? {defaultVal});");
+                            assignments.Add($"JavaScriptRuntime.SetGlobal(\"{idLeft.Name}\", JavaScriptRuntime.GetComputedProperty({sourceExpr}, {i}.0) ?? {defaultVal});");
                         }
                     }
                 }
@@ -2619,6 +2967,16 @@ public static class FullJsToCSharpTranspiler
         return false;
     }
 
+    private static string? GetSuperClassName(string className, List<ClassDeclaration> collectedClasses)
+    {
+        var cls = collectedClasses.FirstOrDefault(c => c.Id != null && c.Id.Name == className);
+        if (cls != null && cls.SuperClass is Identifier superId)
+        {
+            return superId.Name;
+        }
+        return null;
+    }
+
     private static bool HasStaticSuperClass(string className, List<ClassDeclaration> collectedClasses)
     {
         var cls = collectedClasses.FirstOrDefault(c => c.Id != null && c.Id.Name == className);
@@ -2663,5 +3021,41 @@ public static class FullJsToCSharpTranspiler
             }
         }
         return sb.ToString();
+    }
+
+    private static string GeneratePrototypeBinding(string className, List<ClassDeclaration> collectedClasses, string padding)
+    {
+        var currentClass = collectedClasses.FirstOrDefault(c => c.Id != null && c.Id.Name == className);
+        if (currentClass != null && currentClass.SuperClass != null && currentClass.SuperClass is Identifier superId)
+        {
+            var sb = new StringBuilder();
+            sb.Append(padding).AppendLine($"var myProto_{className} = JavaScriptRuntime.GetPrototype(typeof({className}));");
+            sb.Append(padding).AppendLine($"if (myProto_{className} != null && !JavaScriptRuntime.HasPrototype(myProto_{className}))");
+            sb.Append(padding).AppendLine(padding + "{");
+            sb.Append(padding).AppendLine($"    var superProto = JavaScriptRuntime.GetPrototype(\"{superId.Name}\");");
+            sb.Append(padding).AppendLine(padding + "    if (superProto != null)");
+            sb.Append(padding).AppendLine(padding + "    {");
+            sb.Append(padding).AppendLine(padding + $"        JavaScriptRuntime.SetPrototype(myProto_{className}, superProto);");
+            sb.Append(padding).AppendLine(padding + "    }");
+            sb.Append(padding).AppendLine(padding + "}");
+            return sb.ToString();
+        }
+        return "";
+    }
+
+    private static void CollectAllFunctions(Node node, HashSet<string> names, Dictionary<string, JsFunctionDeclaration>? safeFunctions)
+    {
+        if (node is FunctionDeclaration funcDecl && funcDecl.Id is Identifier id)
+        {
+            if (safeFunctions == null || !safeFunctions.ContainsKey(id.Name))
+            {
+                names.Add(id.Name);
+            }
+        }
+
+        foreach (var child in node.ChildNodes)
+        {
+            CollectAllFunctions(child, names, safeFunctions);
+        }
     }
 }
